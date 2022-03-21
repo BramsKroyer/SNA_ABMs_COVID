@@ -1,0 +1,948 @@
+---
+title: "Analysis2"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this document, functions from the *FunctionsForSimuDataPreProc.Rmd* will be used. Therefore, we adivse to run that document before running this one, as otherwise, many functions will not work. 
+
+```{r}
+pacman::p_load(tidyverse,
+               here,
+               network,
+               igraph,
+               ggraph,
+               tidygraph,
+               patchwork,
+               cowplot,
+               rethinking,
+               brms,
+               data.table,
+               lme4,
+               geodist,
+               readxl,
+               wesanderson,
+               brms,
+               rethinking,
+               tidyr,
+               loo,
+               tidybayes
+               )
+
+# Necessary files for the real data
+IngroupOutgroup_Long <- read.csv("IngroupOutgroup_Long.csv")
+
+NetworkMetricsAndConnections <- read.csv("NetworkMetricsAndConnections_Wide.csv") %>%  # Descriptive stats
+  mutate(year = as.factor(year))
+
+population_studygroups <- read.csv("population_w_studygroups.csv") # here are the study-groups
+
+```
+
+In the following, Normal and Lockdown conditions will respectively be called C18_ABM and C19_ABM. 
+
+```{r}
+# Reading in C18_ABM data 
+C18_ABM <- read_csv("C18ABM_SG15.csv")
+
+# 1) Making graph from edgelist, saving the igraph, 2) getting network metrics, saving the object, 3) making the long dataframe
+graph_from_edgelist_own(C18_ABM,0)
+C18_ABM_igraph <- igraph_simple_f
+
+get_network_metrics_from_graph(C18_ABM_igraph)
+C18_ABM_NetworkMetrics <- NetworkMetrics_f
+
+get_in_and_outgroups(C18_ABM,population_studygroups) 
+C18_ABM_long <- long_edges_and_studygroups
+
+# Reading in C19_ABM data 
+C19_ABM <- read_csv("C19ABM_SG15_LOCKDOWN_TRUE.csv")
+
+# 1) Making graph from edgelist, saving the igraph, 2) getting network metrics, saving the object, 3) making the long dataframe
+graph_from_edgelist_own(C19_ABM,0)
+C19_ABM_igraph <- igraph_simple_f
+
+get_network_metrics_from_graph(C19_ABM_igraph)
+C19_ABM_NetworkMetrics <- NetworkMetrics_f
+
+get_in_and_outgroups(C19_ABM,population_studygroups) 
+C19_ABM_long <- long_edges_and_studygroups
+
+```
+
+# Summaries
+## ABM
+```{r}
+# In/Outgroup data summarized side by side
+C18_ABM_long %>% group_by(group) %>% summarise(mean = mean(count),
+                                                            sd = sd(count))
+C19_ABM_long %>% group_by(group) %>% summarise(mean = mean(count),
+                                                            sd = sd(count))
+
+# Networkmetrics - first look
+get_network_metrics_from_graph(C18_ABM_igraph)
+get_network_metrics_from_graph(C19_ABM_igraph)
+
+# Network metrics summarized side by side, first making a collected networkmetrics dataframe for the ABM data
+C19_ABM_NetworkMetrics$ID <- as.integer(C19_ABM_NetworkMetrics$ID)
+C19_ABM_NetworkMetrics$ID <- C19_ABM_NetworkMetrics$ID+100
+C19_ABM_NetworkMetrics <- C19_ABM_NetworkMetrics %>% mutate(type = "C19_ABM") # Making column to indicate type
+
+C18_ABM_NetworkMetrics <- C18_ABM_NetworkMetrics %>% mutate(type = "C18_ABM")
+
+# Merge
+ABM_NetworkMetrics <- rbind(C18_ABM_NetworkMetrics,C19_ABM_NetworkMetrics)
+
+# Single summaries of degree
+summary(C18_ABM_NetworkMetrics$degrees)
+summary(C19_ABM_NetworkMetrics$degrees)
+
+# Single summaries of degree in
+summary(C18_ABM_NetworkMetrics$degrees_in)
+summary(C19_ABM_NetworkMetrics$degrees_in)
+
+# Single summaries of degree out
+summary(C18_ABM_NetworkMetrics$degrees_out)
+summary(C19_ABM_NetworkMetrics$degrees_out)
+
+```
+
+## Preproc. for later validation between C18_ABM and C18_REAL
+```{r}
+# The real data summarized side by side - in/outgroup
+IngroupOutgroup_Long %>% group_by(year,group) %>% summarise(mean = mean(count),
+                                                            sd = sd(count))
+# Same for network metrics
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections %>% filter(year == 2018)
+NetworkMetricsAndConnections_C19 <- NetworkMetricsAndConnections %>% filter(year == 2019)
+
+# Merging the real and simulated data for C18 for modelling
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections_C18 %>% mutate(type = "C18_REAL")
+
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections_C18 %>% select(ID,
+                                            degrees,
+                                            degrees_out,
+                                            degrees_in,
+                                            betweenness,
+                                            transitivity,
+                                            eigen_centrality,
+                                            type)
+
+NetworkMetricsAndConnections_C18$ID <- as.integer(NetworkMetricsAndConnections_C18$ID)
+NetworkMetricsAndConnections_C18$ID <- NetworkMetricsAndConnections_C18$ID+100
+
+# Merging the real and simulated data for C18 for modelling
+str(C18_ABM_NetworkMetrics) # looking at fake data
+str(NetworkMetricsAndConnections_C18) # looking at real data
+
+FakeAndRealC18 <- rbind(NetworkMetricsAndConnections_C18,C18_ABM_NetworkMetrics)
+FakeAndRealC18$type <- as.factor(FakeAndRealC18$type)
+FakeAndRealC18$ID <- as.factor(FakeAndRealC18$ID)
+
+# Summaries for inspecting
+summary(C18_ABM_NetworkMetrics$degrees) # fake data
+summary(NetworkMetricsAndConnections_C18$degrees) # real data
+
+```
+
+
+# Validation 1 w. Bayesian Analysis: Are the real and simulated dataset matched in terms of total degrees? 
+## Conclusion: (Successful)
+There is evidence in favor of the real and simulated datasets being matched in terms of total degrees. However, there is also evidence for ABM having more degrees, meaning the ABM slightly overshoots in terms of amount of degrees. The evidence magnitude and posterior probability is, however, larger for the former hypothesis. 
+
+## Model building-workflow
+```{r}
+
+# 1. Main model formula
+model_ABM_total_deg <- bf(degrees ~ 0 + type + (1|ID)) 
+
+# 2. Using get_prior() to get list of suggested priors
+get_prior(model_ABM_total_deg, data = FakeAndRealC18,  family = poisson())
+
+# 3. Setting priors.
+priors_for_model_poisson_TD_VAL <- c(prior(normal(1.9, 0.5), class = b), 
+                              prior(normal(0, 0.1), class = sd)) 
+```
+
+## Checking and simulating priors:
+The following distributions called through dens() should be run multiple times as the long tails are not always described well with only one run. 
+```{r}
+# --- BETA
+FakeAndRealC18 %>% group_by(type) %>% summarise(mean = mean(degrees),
+                                                sd = sd(degrees)) # mean: ABM 13.2, REAL 12.8,, sd: ABM 3.37, REAL 5.75
+
+# Simulating: 1) rlnorm, 2) rpois
+lambda0 <- rlnorm(10000,1.9,0.5)
+
+dens(lambda0)+title("BETA: Distribution over expected rates (lambdas):
+Prior of normal(mu = 1.9, sd = 0.5) run through rlnorm()") 
+
+simplehist(rpois(10000,lambda0))+title("BETA: Expected counts for beta-priors, (Distribution of lambdas from before run through the rpois())") 
+
+# --- STANDARD DEVIATION for varying effects
+lambda1 <- rlnorm(10000,0,0.1)
+
+dens(lambda1)+title("SD: Distribution over expected rates (lambdas):
+Prior of normal(mu = 0, sd = 0.1) run through rlnorm()") 
+
+simplehist(rpois(10000,lambda1))+title("SD: Expected counts for SD-prior, (Distribution of lambdas from before run through the rpois())") 
+
+```
+
+Now that we have simulated our priors to see what they imply for our modelling, we continue on to the remaining steps of the bayesian workflow:
+
+## Running model: Prior pred. / Posterior pred. checks
+```{r}
+
+# 4. Running model for the prior predictive check
+model_TD_VAL_brm_prior <- brm(
+  model_ABM_total_deg,
+  FakeAndRealC18,
+  family=poisson(),
+  prior=priors_for_model_poisson_TD_VAL,
+  sample_prior = "only"
+)
+
+pp_check(model_TD_VAL_brm_prior, nsamples = 100) + ggtitle("Prior predictive check: Total Degrees VAL: Degrees ~ 0 + type + (1 | ID)")
+
+# 5. Running actual model and running posterior check
+model_TD_VAL_brm <- brm(
+  model_ABM_total_deg,
+  FakeAndRealC18,
+  family=poisson(),
+  prior=priors_for_model_poisson_TD_VAL,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(model_TD_VAL_brm, nsamples = 100)+ggtitle("Posterior predictive check: Total Degrees VAL: Degrees ~ 0 + type + (1 | ID)")
+
+```
+
+## Summary & Chain checks
+```{r}
+# 6. Summary of model
+summary(model_TD_VAL_brm)
+
+# 7. Chain checks
+plot(model_TD_VAL_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_TD_VAL_brm, 
+           pars = c('b_typeC18_ABM', 
+                    'b_typeC18_REAL',
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_TD_VAL_brm, 
+           pars = c('b_typeC18_ABM', 
+                    'b_typeC18_REAL',
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+# Conditional effects plot
+plot(conditional_effects(model_TD_VAL_brm))
+```
+
+## Assessing evidence
+```{r}
+# 9. Assessing evidence for the different hypotheses
+
+hypothesis(
+  model_TD_VAL_brm,
+  c(
+    "typeC18_ABM > typeC18_REAL",
+    "typeC18_ABM = typeC18_REAL",
+    "typeC18_ABM < typeC18_REAL"
+  )
+)
+
+```
+Conclusion: There is evidence in favor of the real and simulated datasets being matched in terms of total degrees. However, there is also evidence for ABM having more degrees, meaning the ABM slightly overshoots in terms of amount of degrees. The evidence magnitude and posterior probability is, however, larger for the former hypothesis.
+
+This can also be seen in the in/out-group validation in validation 3.  
+
+# Validation 2: Are C18_ABM and C18_REAL matched on network metrics? 
+## Conclusion: (Fairly successful, in transitivity was the only signfiicant difference - see Discussion)
+```{r}
+
+# Preprocessing to merge real and simulated data
+# loading in again to ensure it's done properly
+NetworkMetricsAndConnections <- read.csv("NetworkMetricsAndConnections_Wide.csv") %>%  # Descriptive stats
+  mutate(year = as.factor(year))
+
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections %>% filter(year == 2018)
+
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections_C18 %>% mutate(type = "C18_REAL")
+
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections_C18 %>% select(ID,
+                                            degrees,
+                                            degrees_out,
+                                            degrees_in,
+                                            betweenness,
+                                            transitivity,
+                                            eigen_centrality,
+                                            type)
+# Merge
+NetworkMetricsC18_both <- rbind(NetworkMetricsAndConnections_C18,C18_ABM_NetworkMetrics)
+
+# T.test - betweenness (non-significant)
+t.test(betweenness ~ type, data = NetworkMetricsC18_both)
+
+# T.test - eigen_centrality (non-significant)
+t.test(eigen_centrality ~ type, data = NetworkMetricsC18_both)
+
+# T.test - transitivity (significant)
+t.test(transitivity ~ type, data = NetworkMetricsC18_both)
+
+```
+Conclusion: C18_ABM and C18_REAL are similar in terms of betweenness and eigencentrality, but not transitivity. 
+
+
+# Validation 3 w. Bayesian Analysis: Are the real and simulated dataset matched in terms of in/out-studygroup connections? 
+## Conclusion: (Fairly/Not completely successful, as ABM overshoots. Still useful - see Discussion)
+
+```{r}
+# The real data summarized side by side - in/outgroup
+IngroupOutgroup_Long %>% group_by(year,group) %>% summarise(mean = mean(count),
+                                                            sd = sd(count))
+# Same for network metrics
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections %>% filter(year == 2018)
+NetworkMetricsAndConnections_C19 <- NetworkMetricsAndConnections %>% filter(year == 2019)
+
+# Merging the real and simulated data for C18 for modelling
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections_C18 %>% mutate(type = "C18_REAL")
+
+NetworkMetricsAndConnections_C18 <- NetworkMetricsAndConnections_C18 %>% select(ID,
+                                            degrees,
+                                            degrees_out,
+                                            degrees_in,
+                                            betweenness,
+                                            transitivity,
+                                            eigen_centrality,
+                                            type)
+
+NetworkMetricsAndConnections_C18$ID <- as.integer(NetworkMetricsAndConnections_C18$ID)
+NetworkMetricsAndConnections_C18$ID <- NetworkMetricsAndConnections_C18$ID+100
+
+# Merging the real and simulated data for C18 for modelling
+str(C18_ABM_NetworkMetrics) # looking at fake data
+str(NetworkMetricsAndConnections_C18) # looking at real data
+
+FakeAndRealC18 <- rbind(NetworkMetricsAndConnections_C18,C18_ABM_NetworkMetrics)
+FakeAndRealC18$type <- as.factor(FakeAndRealC18$type)
+FakeAndRealC18$ID <- as.factor(FakeAndRealC18$ID)
+
+# Summaries for inspecting
+summary(C18_ABM_NetworkMetrics$degrees) # fake data
+summary(NetworkMetricsAndConnections_C18$degrees) # real data
+
+
+# Preprocessing first
+IngroupOutgroup_Long_temp <- IngroupOutgroup_Long %>% rename(condition = year)
+IngroupOutgroup_Long_temp <- filter(IngroupOutgroup_Long_temp,IngroupOutgroup_Long_temp$condition == 2018)
+IngroupOutgroup_Long_temp$condition <- "REAL"
+IngroupOutgroup_Long_temp <- IngroupOutgroup_Long_temp[,-1]
+
+C18_ABM_long_temp <- C18_ABM_long %>% mutate(condition = "ABM")
+C18_ABM_long_temp$ID <- C18_ABM_long_temp$ID+100
+
+# Checking
+str(IngroupOutgroup_Long_temp)
+str(C18_ABM_long_temp)
+
+# Summaries for inspecting
+summary(IngroupOutgroup_Long_temp$count)
+summary(C18_ABM_long_temp$count)
+
+# Merge
+FakeAndRealC18_INOUT_Long <- rbind(C18_ABM_long_temp,IngroupOutgroup_Long_temp)
+
+# Check classes
+FakeAndRealC18_INOUT_Long$ID <- as.factor(FakeAndRealC18_INOUT_Long$ID)
+FakeAndRealC18_INOUT_Long$group <- as.factor(FakeAndRealC18_INOUT_Long$group)
+FakeAndRealC18_INOUT_Long$condition <- as.factor(FakeAndRealC18_INOUT_Long$condition)
+
+```
+
+ ## Model building-workflow
+```{r}
+# 1. Main model formula
+model_ABM_C18 <- bf(count ~ 0 + condition:group + (0+group|ID)) 
+
+# 2. Using get_prior() to get list of suggested priors
+get_prior(model_ABM_C18, data = FakeAndRealC18_INOUT_Long,  family = poisson())
+
+# 3. Setting priors.
+priors_for_model_poisson_ABM_C18 <- c(prior(normal(1.7, 0.5), class = b), 
+                              prior(lkj(5), class = cor),
+                              prior(normal(0, 0.1), class = sd)) 
+
+FakeAndRealC18_INOUT_Long %>% group_by(condition) %>% summarise(mean = mean(count),
+                                                                sd = sd(count)) # similar numbers as before, thus we keep the priors
+```
+
+## Running model: Prior pred. / Posterior pred. checks
+```{r}
+# 4. Running model for the prior predictive check
+model_ABM_C18_brm_prior <- brm(
+  model_ABM_C18,
+  FakeAndRealC18_INOUT_Long,
+  family=poisson(),
+  prior=priors_for_model_poisson_ABM_C18,
+  sample_prior = "only"
+)
+pp_check(model_ABM_C18_brm_prior, nsamples = 100) + ggtitle("Prior predictive check, Validation of Model count ~ 0 + condition:group +
+(0 + group | ID), 
+comparing C18_ABM with C18_Real")
+
+FakeAndRealC18_INOUT_Long %>% group_by(condition,group) %>% summarise(mean(count))
+# 5. Running actual model and running posterior check
+model_ABM_C18_brm <- brm(
+  model_ABM_C18,
+  FakeAndRealC18_INOUT_Long,
+  family=poisson(),
+  prior=priors_for_model_poisson_ABM_C18,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2),
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(model_ABM_C18_brm, nsamples = 100)+ggtitle("Posterior predictive check: Validation of Model count ~ 0 + condition:group +
+(0 + group | ID), 
+comparing C18_ABM with C18_Real")
+
+```
+
+## Summary & Chain checks
+```{r}
+# 6. Summary of model
+summary(model_ABM_C18_brm)
+
+# 7. Chain checks
+plot(model_ABM_C18_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_ABM_C18_brm, 
+           pars = c('b_conditionABM:groupoutgroup', 
+                    'b_conditionREAL:groupoutgroup', 
+                    'b_conditionABM:groupingroup',
+                    'b_conditionREAL:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_ABM_C18_brm, 
+           pars = c('b_conditionABM:groupoutgroup', 
+                    'b_conditionREAL:groupoutgroup', 
+                    'b_conditionABM:groupingroup',
+                    'b_conditionREAL:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+# Conditional effects plot
+plot(conditional_effects(model_ABM_C18_brm))
+```
+
+## Posterior samples
+```{r}
+# 8. Assessing whether the model learned from seeing the data
+posterior <- posterior_samples(model_ABM_C18_brm)
+
+# Posterior learning plots for in-group connections per student for each cohort against the prior
+posterior %>% 
+  pivot_longer(c(`b_conditionABM:groupingroup`,`b_conditionREAL:groupingroup`,`prior_b`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  ggtitle("Validation: Posterior learning plots for in-group connections per student for each condition against the prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Posterior learning plots for out-group connections per student for each cohort against the prior
+posterior %>% 
+  pivot_longer(c(`b_conditionABM:groupoutgroup`,`b_conditionREAL:groupoutgroup`,`prior_b`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  ggtitle("Validation: Posterior learning plots for out-group connections per student for each condition against the prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Posterior learning plots for standard deviation for varying effect with regularized prior
+posterior %>% 
+  pivot_longer(c(`sd_ID__groupingroup`,`sd_ID__groupoutgroup`,`prior_sd_ID`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2, 4, 3)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2, 4, 3)]) +
+  ggtitle("Validation: Posterior learning plots for standard deviation for varying effect with regularized prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+
+# LKJ Prior
+posterior %>%
+  pivot_longer(c(`cor_ID__groupingroup__groupoutgroup`,`prior_cor_ID`),names_to = "Estimate") %>% 
+  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 2)]) +
+  ggtitle("Validation: Posterior learning plots for correlation prior") +
+  xlab("Difference in effect size between groups") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot for in and out-group estimates
+posterior %>% 
+  mutate(difference_ingroup = exp(`b_conditionREAL:groupingroup` - `b_conditionABM:groupingroup`),difference_outgroup = exp(`b_conditionREAL:groupoutgroup` - `b_conditionABM:groupoutgroup`)) %>%
+  pivot_longer(c("difference_ingroup","difference_outgroup"),names_to = "Estimate") %>% 
+  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(4, 3)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(4, 3)]) +
+  ggtitle("Validation: Between-cohort/condition difference (exponentiated) in effect sizes for ingroup and outgroup") +
+  xlab("Exponentiated difference between conditions in effect size for groups") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Making a better plot over the estimates for out-/in-group
+posterior %>%
+  mutate(
+    out_RealCondition  = exp(`b_conditionREAL:groupoutgroup`),
+    out_ABMCondition = exp(`b_conditionABM:groupoutgroup`)
+  ) %>%
+  pivot_longer(out_RealCondition:out_ABMCondition) %>%
+  
+  # plot for out
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1],
+    alpha = 0.8
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "# of non-studygroup (out) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Validation - Cohort (condition)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+posterior %>%
+  mutate(
+    in_RealCondition  = exp(`b_conditionREAL:groupingroup`),
+    out_ABMCondition = exp(`b_conditionABM:groupingroup`)
+  ) %>%
+  pivot_longer(in_RealCondition:out_ABMCondition) %>%
+  
+  # plot for in
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "# of studygroup (in) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Validation - Cohort (condition)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot
+posterior %>%
+  mutate(
+    difference_in  = exp(`b_conditionREAL:groupingroup`)-exp(`b_conditionABM:groupingroup`),
+    difference_out = exp(`b_conditionREAL:groupoutgroup`)-exp(`b_conditionABM:groupoutgroup`)
+  ) %>%
+  pivot_longer(difference_in:difference_out) %>%
+  
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[4:3]) +
+  labs(title = "# of difference in counts of friends for each cohort (in each condition)",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Validation - Studygroup (in) and Non-studygroup (out)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+## Assessing evidence
+```{r}
+# 9. Assessing evidence for the different hypotheses
+
+hypothesis(
+  model_ABM_C18_brm,
+  c(
+    "conditionREAL:groupoutgroup > conditionABM:groupoutgroup",
+    "conditionREAL:groupoutgroup = conditionABM:groupoutgroup",
+    "conditionREAL:groupoutgroup < conditionABM:groupoutgroup"
+  )
+)
+
+hypothesis(
+  model_ABM_C18_brm,
+  c(
+    "conditionREAL:groupingroup > conditionABM:groupingroup",
+    "conditionREAL:groupingroup = conditionABM:groupingroup",
+    "conditionREAL:groupingroup < conditionABM:groupingroup"
+  )
+)
+
+```
+
+
+# ANALYSIS w. Bayesian analysis: Do we see a similar difference between the simulated cohorts (C18_ABM and C19_ABM) as we did in the real data?  
+
+## Merging the two ABM cohorts' datasets
+```{r}
+
+# Adding 100 to C19s ID's to differentiate ID's
+C19_ABM_long$ID <- C19_ABM_long$ID+100
+
+# Add row with lockdown / no_lockdown
+C18_ABM_long$condition <- rep("Normal", nrow(C18_ABM_long))
+C19_ABM_long$condition <- rep("Lockdown", nrow(C19_ABM_long))
+
+# Merge them
+Cohorts_ABM_long <- rbind(C18_ABM_long,C19_ABM_long)
+
+# Converting variables into their right classes
+Cohorts_ABM_long$condition <- as.factor(Cohorts_ABM_long$condition)
+Cohorts_ABM_long$group <- as.factor(Cohorts_ABM_long$group)
+Cohorts_ABM_long$ID <- as.factor(Cohorts_ABM_long$ID)
+Cohorts_ABM_long$count <- as.integer(Cohorts_ABM_long$count)
+
+```
+
+## Model building-workflow
+```{r}
+# 1. Main model formula
+model_ABM <- bf(count ~ 0 + condition:group + (0+group|ID)) 
+
+# 2. Using get_prior() to get list of suggested priors
+get_prior(model_ABM, data = Cohorts_ABM_long,  family = poisson())
+
+# 3. Setting priors.
+priors_for_model_poisson_ABM <- c(prior(normal(1.7, 0.5), class = b), 
+                              prior(lkj(5), class = cor),
+                              prior(normal(0, 0.1), class = sd)) 
+```
+
+## Checking and simulating priors:
+The following distributions called through dens() should be run multiple times as the long tails are not always described well with only one run. 
+```{r}
+# --- BETA
+Cohorts_ABM_long %>% group_by(condition,group) %>% summarise(mean = mean(count),
+                                                             sd = sd(count))
+
+# Simulating: 1) rlnorm, 2) rpois
+lambda0 <- rlnorm(10000,1.7,0.5)
+
+dens(lambda0)+title("BETA: Distribution over expected rates (lambdas):
+Prior of normal(mu = 1.7, sd = 0.4) run through rlnorm()") 
+
+simplehist(rpois(10000,lambda0))+title("BETA: Expected counts for beta-priors, (Distribution of lambdas from before run through the rpois())") 
+
+# --- STANDARD DEVIATION for varying effects
+lambda1 <- rlnorm(10000,0,0.1)
+
+dens(lambda1)+title("SD: Distribution over expected rates (lambdas):
+Prior of normal(mu = 0, sd = 0.1) run through rlnorm()") 
+
+simplehist(rpois(10000,lambda1))+title("SD: Expected counts for SD-prior, (Distribution of lambdas from before run through the rpois())") 
+
+```
+
+Now that we have simulated our priors to see what they imply for our modelling, we continue on to the remaining steps of the bayesian workflow:
+
+## Running model: Prior pred. / Posterior pred. checks
+```{r}
+
+# 4. Running model for the prior predictive check
+model_ABM_brm_prior <- brm(
+  model_ABM,
+  Cohorts_ABM_long,
+  family=poisson(),
+  prior=priors_for_model_poisson_ABM,
+  sample_prior = "only"
+)
+pp_check(model_ABM_brm_prior, nsamples = 100) + ggtitle("Prior predictive check: ABM_Model count ~ 0 + condition:group + 
+(0 + group | ID)")
+
+# 5. Running actual model and running posterior check
+model_ABM_brm <- brm(
+  model_ABM,
+  Cohorts_ABM_long,
+  family=poisson(),
+  prior=priors_for_model_poisson_ABM,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(model_ABM_brm, nsamples = 100)+ggtitle("Posterior predictive check: ABM_Model count ~ 0 + condition:group +
+(0 + group | ID))")
+
+```
+
+## Summary & Chain checks
+```{r}
+# 6. Summary of model
+summary(model_ABM_brm)
+
+# 7. Chain checks
+plot(model_ABM_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_ABM_brm, 
+           pars = c('b_conditionLockdown:groupoutgroup', 
+                    'b_conditionNormal:groupoutgroup', 
+                    'b_conditionLockdown:groupingroup',
+                    'b_conditionNormal:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_ABM_brm, 
+           pars = c('b_conditionLockdown:groupoutgroup', 
+                    'b_conditionNormal:groupoutgroup', 
+                    'b_conditionLockdown:groupingroup',
+                    'b_conditionNormal:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+# Conditional effects plot
+plot(conditional_effects(model_ABM_brm))
+```
+
+## Posterior samples
+```{r}
+# 8. Assessing whether the model learned from seeing the data
+posterior <- posterior_samples(model_ABM_brm)
+
+# Posterior learning plots for in-group connections per student for each cohort against the prior
+posterior %>% 
+  pivot_longer(c(`b_conditionNormal:groupingroup`,`b_conditionLockdown:groupingroup`,`prior_b`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  ggtitle("ABM: Posterior learning plots for in-group connections per student for each condition against the prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Posterior learning plots for out-group connections per student for each cohort against the prior
+posterior %>% 
+  pivot_longer(c(`b_conditionNormal:groupoutgroup`,`b_conditionLockdown:groupoutgroup`,`prior_b`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  ggtitle("ABM: Posterior learning plots for out-group connections per student for each condition against the prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Posterior learning plots for standard deviation for varying effect with regularized prior
+posterior %>% 
+  pivot_longer(c(`sd_ID__groupingroup`,`sd_ID__groupoutgroup`,`prior_sd_ID`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2, 4, 3)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2, 4, 3)]) +
+  ggtitle("ABM: Posterior learning plots for standard deviation for varying effect with regularized prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+
+# LKJ Prior
+posterior %>%
+  pivot_longer(c(`cor_ID__groupingroup__groupoutgroup`,`prior_cor_ID`),names_to = "Estimate") %>% 
+  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 2)]) +
+  ggtitle("ABM: Posterior learning plots for correlation prior") +
+  xlab("Difference in effect size between groups") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot for in and out-group estimates
+posterior %>% 
+  mutate(difference_ingroup = exp(`b_conditionNormal:groupingroup` - `b_conditionLockdown:groupingroup`),difference_outgroup = exp(`b_conditionNormal:groupoutgroup` - `b_conditionLockdown:groupoutgroup`)) %>%
+  pivot_longer(c("difference_ingroup","difference_outgroup"),names_to = "Estimate") %>% 
+  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(4, 3)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(4, 3)]) +
+  ggtitle("ABM: Between-cohort/condition difference (exponentiated) in effect sizes for ingroup and outgroup") +
+  xlab("Exponentiated difference between conditions in effect size for groups") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Making a better plot over the estimates for out-/in-group
+posterior %>%
+  mutate(
+    out_NormalCondition  = exp(`b_conditionNormal:groupoutgroup`),
+    out_LockdownCondition = exp(`b_conditionLockdown:groupoutgroup`)
+  ) %>%
+  pivot_longer(out_NormalCondition:out_LockdownCondition) %>%
+  
+  # plot for out
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1],
+    alpha = 0.8
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "# of non-studygroup (out) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Cohort (condition)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+posterior %>%
+  mutate(
+    in_NormalCondition  = exp(`b_conditionNormal:groupingroup`),
+    in_LockdownCondition = exp(`b_conditionLockdown:groupingroup`)
+  ) %>%
+  pivot_longer(in_NormalCondition:in_LockdownCondition) %>%
+  
+  # plot for in
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "# of studygroup (in) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Cohort (condition)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot
+posterior %>%
+  mutate(
+    difference_in  = exp(`b_conditionNormal:groupingroup`)-exp(`b_conditionLockdown:groupingroup`),
+    difference_out = exp(`b_conditionNormal:groupoutgroup`)-exp(`b_conditionLockdown:groupoutgroup`)
+  ) %>%
+  pivot_longer(difference_in:difference_out) %>%
+  
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[4:3]) +
+  labs(title = "# of difference in counts of friends for each cohort (in each condition)",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Studygroup (in) and Non-studygroup (out)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+## Assessing evidence
+```{r}
+# 9. Assessing evidence for the different hypotheses
+
+hypothesis(
+  model_ABM_brm,
+  c(
+    "conditionNormal:groupoutgroup > conditionLockdown:groupoutgroup",
+    "conditionNormal:groupoutgroup = conditionLockdown:groupoutgroup",
+    "conditionNormal:groupoutgroup < conditionLockdown:groupoutgroup"
+  )
+)
+```
+Conclusion 1/2: Evidence is highly in favor of the Normal condition having more outgroup connections than the Lockdown condition. 
+
+
+```{r}
+hypothesis(
+  model_ABM_brm,
+  c(
+    "conditionNormal:groupingroup > conditionLockdown:groupingroup",
+    "conditionNormal:groupingroup = conditionLockdown:groupingroup",
+    "conditionNormal:groupingroup < conditionLockdown:groupingroup"
+  )
+)
+
+
+```
+Conclusion 2/2: Evidence is largely in favor of the Normal and Lockdow condition having similar ingroup connections, however a slight amount of evidence for the Normal condition having fewer connections ingroup than the Lockdown condition is also present, though with a smaller posterior probability. 
+
+

@@ -1,0 +1,304 @@
+---
+title: "FunctionsForSimuDataPreProc"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+# Setup
+pacman::p_load(tidyverse,
+               Rfast, 
+               geodist,
+               ggplot2,
+               igraph,
+               RColorBrewer)
+
+```
+
+# Function for making the studygroup (ingroup) vs non-studygroup (outgroup) connections overview 
+
+This function below needs two inputs, and it returns three dataframes available for access. 
+
+* edgelistcsv, as in e.g. ABM_24May_edges <- read.csv("ABM_24May_high_SG_edgelist_Pernille.csv")
+* populationcsv, as in e.g. population_24May <- read.csv("population_24May_Pernille.csv") # here are the studygroups
+
+*Remember to rename the dataframes outputted if you're making more of these in a row.*
+
+## The function
+```{r}
+get_in_and_outgroups <- function(edgelistcsv,populationcsv){ # Before putting it in, read in the population + edgelist in csv
+  
+  # population
+  populationcsv <- tibble::rowid_to_column(populationcsv, "ID")
+  populationcsv <- populationcsv %>% rename(studygroup_no = studygroup)
+  populationcsv$ID <- as.factor(populationcsv$ID)
+  
+  population_df <- populationcsv
+  
+  # edges
+  edges_df <- edgelistcsv %>% rename(to = V1,
+                                        from = V2)
+  
+  # rename so it's easier
+  studygroup_membership_population <- population_df %>% rename(membership=studygroup_no)
+
+  # take "from" column 
+  studygroup_membership_population1 <- studygroup_membership_population %>% rename(from = ID)
+
+  # Merge
+  studygroup_membership_population_temp <- merge(edges_df, studygroup_membership_population1, by = "from")
+
+  # Take "to" column 
+  studygroup_membership_population2 <- studygroup_membership_population %>% rename(to = ID)
+
+  # Merge
+  edges_and_studygroups <- merge(studygroup_membership_population_temp,studygroup_membership_population2, by = "to" )
+
+  # Renaming the columns we just got
+  edges_and_studygroups_renamed <- edges_and_studygroups %>% rename(membership_from = membership.x)
+  edges_and_studygroups <- edges_and_studygroups_renamed %>% rename(membership_to = membership.y)
+
+  # Make a column indicating in/outgroup
+  edges_and_studygroups$group <- ifelse(edges_and_studygroups$membership_to == edges_and_studygroups$membership_from, "ingroup", "outgroup")
+
+
+  # Summarise and count grouped by from and to in order to get the right numbers after
+  from <- edges_and_studygroups %>% group_by(from, group) %>% summarise(n = n())
+  to <- edges_and_studygroups %>% group_by(to, group) %>% summarise(n = n())
+
+  # Adding from and to together and binding them - they're going to be different instances anyway
+  converted_to <- from %>% rename(to = from)
+  connections <- rbind(to,converted_to)
+
+  # Making subsets
+  connections_in <- connections %>% filter(group=="ingroup")
+  connections_out <- connections %>% filter(group=="outgroup")
+
+  # Now, count + make a new column in both subsets so they can be put together
+  connections_in <- connections_in %>% group_by(to) %>%
+       summarize(SG_connections = sum(n)) %>% 
+    mutate(NON_SG_connections = NA)
+
+  connections_out <- connections_out %>% group_by(to) %>%
+       summarize(NON_SG_connections = sum(n)) %>% 
+    mutate(SG_connections = NA)
+
+  # Merge (no NA's) + lastly replacing -Inf with 0's (those without studygroups or no outgoings)
+  connections_overview <- rbind(connections_in,connections_out, fill = TRUE)
+  
+  edges_and_studygroups <- connections_overview %>%
+    group_by(to) %>%
+    summarise(
+      NON_SG_connections = max(NON_SG_connections, na.rm = T),
+      SG_connections = max(SG_connections, na.rm = T)
+    )
+
+  edges_and_studygroups[edges_and_studygroups == -Inf] <- 0
+
+
+  edges_and_studygroups <- edges_and_studygroups %>% rename(outgroup = NON_SG_connections,
+                                                            ingroup = SG_connections)
+ 
+    # Finally, make it long
+  long_edges_and_studygroups <- edges_and_studygroups %>%
+   pivot_longer(c(outgroup, ingroup), names_to = "group") %>%
+   rename(ID = to,
+          count = value)
+  
+   # Making an extended version w. difference column, absolute difference, total connections, ratio out/total
+  edges_and_studygroups_ext <- edges_and_studygroups %>%
+    mutate(
+      diff_in_out_connections = outgroup-ingroup,
+      absdiff_in_out_connections = abs(outgroup-ingroup),
+      total_connections = outgroup+ingroup,
+      ratio_outgoing_over_total = outgroup/total_connections
+    )
+  
+  # Saving two mains
+  wide_edges_and_studygroups <<- edges_and_studygroups
+  long_edges_and_studygroups <<- long_edges_and_studygroups
+  
+  # Evt: 
+  # edges_and_studygroups_ext <<- edges_and_studygroups_ext 
+  
+  print("Nevermind the grouping warnings, but REMEMBER TO RENAME WIDE_EDGES..+ LONG_EDGES..")
+
+}
+```
+
+# Function 2: Get the graph from edgelistcsv
+```{r}
+
+# Function
+graph_from_edgelist_own <- function(edgelistcsv, u) {
+  set.seed(123)
+  
+  edges <- edgelistcsv %>% rename(from = V1,
+                                        to = V2) # theyre always named something weird when saved
+  
+  if (NCOL(edges) > 2){
+    edges[,1] <- NULL
+  }
+  
+  nodes <- data.frame(ID = unique(c(edges$from,
+                                    edges$to)))
+  
+  # Using igraph to plot
+  igraph_basic <-
+    graph_from_data_frame(d = edges,
+                          vertices = nodes,
+                          directed = TRUE)
+  
+  igraph_simple_f <- simplify(
+    igraph_basic,
+    remove.multiple = TRUE,
+    remove.loops = TRUE,
+    edge.attr.comb = igraph_opt("edge.attr.comb")
+  )
+  
+  V(igraph_simple_f)$frame.color <- "white"
+  V(igraph_simple_f)$color <- "orange"
+  #V(igraph_simple_f)$label <- "" # can be unhashed for difference
+  E(igraph_simple_f)$arrow.mode <- 0 
+  #E(igraph_simple_f)$width <- edge_attr(igraph_simple_f)$weight/2 # can be unhased for difference
+  V(igraph_simple_f)$size <-
+    degree(igraph_simple_f, mode = "all")
+  
+  igraph_simple_f <<- igraph_simple_f
+  
+  print("Remember to rename the graph object with the dates/info.")
+  
+  # First plot
+  if (u == 1){
+     wcf <- cluster_walktrap(igraph_simple_f)
+     return(plot(wcf, igraph_simple_f) + title("First look at communities (using cluster walktrap)"))
+  }
+  
+  if (u == 0){
+    # Second plot
+    clpf <- cluster_louvain(as.undirected(igraph_simple_f))
+    return(plot(clpf, igraph_simple_f) + title("Second look at communities (using cluster_louvain)"))
+  }
+}
+
+```
+
+# Function 3: Getting network metrics from graph object
+```{r}
+
+# Function
+get_network_metrics_from_graph <- function(graphobject) {
+  
+  # --------- DEGREE ---------
+  
+  degrees <-
+    as.data.frame(degree(graphobject)) %>% rownames_to_column("ID")
+  colnames(degrees)[2] <- "degrees"
+  
+  degrees_out <-
+    as.data.frame(degree(graphobject, mode = "out")) %>% rownames_to_column("ID")
+  colnames(degrees_out)[2] <- "degrees_out"
+  
+  degrees_in <-
+    as.data.frame(degree(graphobject, mode = "in")) %>% rownames_to_column("ID")
+  colnames(degrees_in)[2] <- "degrees_in"
+  
+  temp <- merge(degrees, degrees_out, by = "ID")
+  
+  degrees_f <- merge(temp, degrees_in, by = "ID")
+  
+  # Printing summaries
+  print("Summary all degrees: ")
+  print(summary(degrees_f$degrees))
+  
+  print("Summary indegrees: ")
+  print(summary(degrees_f$degrees_in))
+  
+  print("Summary outdegrees: ")
+  print(summary(degrees_f$degrees_out))
+  
+  
+  # --------- BETWEENNESS ---------
+  
+  betweenness <-
+    as.data.frame(betweenness(graphobject)) %>% rownames_to_column("ID")
+  colnames(betweenness)[2] <- "betweenness"
+  
+  # Printing summaries
+  print("Summary betweenness: ")
+  print(summary(betweenness$betweenness))
+  
+  
+  # --------- TRANSITIVITY ---------
+  
+  transitivity <-
+    data.frame(node = names(V(graphobject)),
+               trans = transitivity(graphobject, type = "local")) %>%
+    rename(ID = node,
+           transitivity = trans)
+  
+  # Printing summaries
+  print("Summary transitivity: ")
+  print(summary(transitivity$transitivity))
+  
+  # --------- EIGEN-CENTRALITY ---------
+  
+  eigencentrality <-
+    as.data.frame(eigen_centrality(graphobject)) %>% rownames_to_column("ID")
+  colnames(eigencentrality)[2] <- "eigen_centrality"
+  
+  eigencentrality <-
+    eigencentrality %>% select(ID, eigen_centrality)
+  
+  # Printing summaries
+  print("Summary eigen_centrality: ")
+  print(summary(eigencentrality$eigen_centrality))
+  
+  
+  # Merging all the dataframes from above into one networkmetrics-df
+  temp <- merge(degrees_f, betweenness, by = "ID")
+  temp <- merge(temp, transitivity, by = "ID")
+  temp <- merge(temp, eigencentrality, by = "ID")
+  
+  NetworkMetrics_f <<- temp
+  print("REMEMBER TO RENAME THE NetworkMetrics_f OBJECT!")
+}
+```
+
+```{r}
+# Assessing the two final ABM outputs - works as kind of a test
+population_studygroups <- read.csv("population_w_studygroups.csv") # here are the study-groups
+
+### C18
+C18_ABM <- read_csv("C18ABM_SG15.csv")
+
+graph_from_edgelist_own(C18_ABM,0)
+
+get_in_and_outgroups(C18_ABM,population_studygroups)
+
+C18_ABM_long <- long_edges_and_studygroups
+
+C18_ABM_long %>% group_by(group) %>% summarise(mean = mean(count),
+                                                               sd = sd(count))
+
+###### C19
+C19_ABM <- read_csv("C19ABM_SG15_LOCKDOWN_TRUE.csv")
+
+graph_from_edgelist_own(C19_ABM,0)
+
+get_in_and_outgroups(C19_ABM,population_studygroups)
+
+C19_ABM_long <- long_edges_and_studygroups
+
+C19_ABM_long %>% group_by(group) %>% summarise(mean = mean(count),
+                                                               sd = sd(count))
+
+```
+
+
+
+

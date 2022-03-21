@@ -1,0 +1,1629 @@
+---
+title: "Building a network ABM"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+To investigate whether the structure of social networks at a Danish university might have been affected by lockdown, an Agent Based Model was built to simulate social interaction between 50 students over the course of approximately three semesters. The model is divided into two main parts: The meeting and the connection between students. For testing the difference between a social network structure in lockdown and in non-lockdown, a lockdown parameter is introduced.All parameters included in the model can be turned ON or OFF to make it easy to investigate the effect of each of the parameters.Similarly, all the parameter values within the ABM can all be redefined at any time to investigate how different values affect the output. 
+The output of the ABM is an 'igraph' object, yielding a visualization of the network and a data frame containing network properties as they progress over time (days).  
+
+# Terminology
+A student is a node - also called a vertex - and an edge between two nodes is thus a connection made. 
+A student (node v_i) can make a connection to another student (node v_j) without it necessarily being reciprocated. 
+
+### The Meeting
+First, each student (node) in the population chooses a different student (node) based on probabilities decided by different parameters:
+
+Social Trait               - How social the other student is
+Study group                - If the other person is in the same studygroup
+Friday Bar                 - If there is a friday bar 
+Lecture                    - If there is a physical lecture
+Geodesic distance          - How close to the student in the network the other student is  
+Preferential attachment    - Students with more friends are more likely befriend each other (in other words, it is the "rich get richer" phenomenon but with friends)
+Meeting baseline           - Random difference in how likely people are to meet. This variable is made to capture scenarios where the students e.g. might run into each                                other outside of class hours or because of living close to each other 
+
+The probabilities are generated from a weights matrix of values set for each of the parameters. The parameters "Friday bar" and "Lecture" are global and provide the same weight across all students while "Social Trait", "Study Group", "Geodesic Distance" and "Meeting Baseline" vary for each student. 
+
+### The Connection
+After the student has paired up with (met) another student there is a probability that they will make a connection, which is a proxy for becoming better acquainted. This probability is defined by a value between 0 and 100, specified by the following parameters:
+
+Friday Bar          - If there is a Friday bar
+Lecture             - If there is a physical lecture
+Connection Baseline - A randomly assigned value of a pair of students connecting. This accounts for possible differences in how "compatible" the two students are
+
+### The lockdown
+To investigate whether lockdown and restrictions on social interactions is a possible cause of differences in social network structure, a lockdown parameter is incorporated into the ABM. This parameter can be turned on and off to see and compare the differences, and provides a global penalty for meeting anyone as well as remove Friday bars and in-class lectures. 
+
+### Additional comments
+1. The model is computationally heavy, and can take several hours, with the processing time increasing with the amount of ticks
+2. Robustness checks were performed with variations of the settings for the parameters. For brevity, only a few checks are included in this code as examples. For the full code contact the researchers.
+
+## Setup
+```{r}
+# Loading in the needed packages
+pacman::p_load(tidyverse,
+               Rfast, 
+               geodist,
+               ggplot2,
+               igraph,
+               RColorBrewer)
+```
+
+# Creating the functions
+First step of the ABM is to create the functions that will be driving the "decisions" of the agents. This includes the creation of the population as well as all functions for both the 'Meeting'- and the 'Connection' step.
+
+## ------------ Function for creating the population
+```{r}
+# Creating a population of students and assigning them a studygroup and a social trait
+population_function <- function(group_nr, mean_st, sd_st) {
+  tibble(
+    studygroup = rep(c(1:group_nr), N / group_nr),
+    social_trait = rnorm(N, mean = mean_st, sd = sd_st)
+  )
+}
+```
+
+## ------------ Function for meeting parameter (random)
+```{r}
+# Assigning all pairs a baseline weight of meeting. This accounts for the possibility that some people are more prone to run into eachother for reason that cannot be controlled for (like living close to each other)
+meeting_base_function <- function(meet_matrix, v_meet) {  
+  for (row in 1:nrow(meet_matrix)) {
+    for (col in 1:ncol(meet_matrix)) {
+      meet_matrix[row, col] <- meet_matrix[col,row] <- sample(c(1:v_meet), 1, replace = T)
+    }
+  }
+  return(meet_matrix)
+}
+
+```
+
+## ------------ Global penalty for meeting during lockdown
+```{r}
+# The function for creating a global lockdown penalty  
+lockdown_function <- function(meet_matrix, v_lockdown){
+  meet_matrix <- meet_matrix - v_lockdown
+  return(meet_matrix)
+}
+
+```
+
+## ------------ Study group function. Adding weight v to studygroup, decays in importance over time
+```{r}
+# Adding a increase in chance of meeting if you are in the same studygroup (as the study affords interaction in studygroups due to group assignments etc.)
+study_group_function <- function(meet_matrix, v_studygroup, t, divider) { 
+  if (((((((t/2) %% 1 == 0) | (t/3) %% 1 == 0)| (t/5) %% 1 == 0) | (t/7) %% 1 == 0) | (t/11) %% 1 ==0) | (t/13) %% 1 == 0) {
+    for (row in 1:nrow(meet_matrix))
+      for (col in 1:ncol(meet_matrix)) {
+        if (population[row, 1] == population[col, 1]) {
+          meet_matrix[row, col] <- meet_matrix[row, col] + v_studygroup * exp(-t / divider) # Decays in importance over time as we expect that it will be less important if you were assigned to studygroups and more important how close you are in the network 
+        }
+      }
+  }
+  return(meet_matrix)
+}
+
+# # Adding a increase in chance of meeting if you are in the same studygroup (as the study affords interaction in studygroups due to group assignments etc.)
+# study_group_function <- function(meet_matrix, v_studygroup, t, divider, freq_st) { 
+#   if ((t / freq_st) %% 1 == 0) {
+#     for (row in 1:nrow(meet_matrix))
+#       for (col in 1:ncol(meet_matrix)) {
+#         if (population[row, 1] == population[col, 1]) {
+#           meet_matrix[row, col] <- meet_matrix[row, col] + v_studygroup * exp(-t / divider) # Decays in importance over time as we expect that it will be less important if you were assigned to studygroups and more important how close you are in the network 
+#         }
+#       }
+#   }
+#   return(meet_matrix)
+# }
+
+# TEST med 80%
+# gårop <- 0
+# for (i in 1:180){
+#   if (((((((i/2) %% 1 == 0) | (i/3) %% 1 == 0)| (i/5) %% 1 == 0) | (i/7) %% 1 == 0) | (i/11) %% 1 ==0) | (i/13) %% 1 == 0){
+#     gårop <- gårop +1
+#    # print("Den går oooooooooooop!")
+#     }
+#   else {
+#     #print("Den går ikke op!")
+#   }
+#   i <- i+1
+#   } # 80%
+# (gårop/180)*100
+
+```
+
+## ------------ Friday bar function (GLOBAL)
+```{r}
+# Global weight added to all students to even out the possibility of meeting everyone (as a friday bar is a social event that affords interaction across the network)
+friday_bar_function <- function(meet_matrix, v_fridaybar, freq_fb, t) {
+  if ((t / freq_fb) %% 1 == 0) { # 'freq_fb' is how often there is a Friday bar e.g. every 14 days
+    meet_matrix <-  meet_matrix + v_fridaybar
+  }
+  return(meet_matrix)
+}
+
+```
+
+## ------------ Physical lecture function (GLOBAL)
+```{r}
+# Global weight added for on-campus lectures
+lecture_function <- function(meet_matrix, v_lecture, freq_l, t) {
+  if ((t / freq_l) %% 1 == 0) { # Frequency of lectures, e.g. every third day
+    meet_matrix <- meet_matrix + v_lecture
+  }
+  return(meet_matrix)
+}
+
+```
+
+## ------------ Geodesic distance function
+We want the probability of having a meeting to be proportional/modulated by how far away to students are from eachother in the network - in other words, that it is more likely that you meet your friends' friends than people who are in different social circles. 
+
+Geodesic distance's importance should grow over time, as we expect that people, as they create more connections, will meet up more frequently with people they already have a connection to. 
+
+```{r}
+# First function, which generates a matrix of distances between two nodes (students) in a network and create a weight that decreases the further away two nodes are from each other 
+geodist_penalty_function <- function(dist_matrix, matrix_connections, delta, v_dist, t){
+  dist_graph <- graph_from_adjacency_matrix(matrix_connections, mode = "directed") 
+  for(i in 1:ncol(dist_matrix)){
+    for(j in 1:nrow(dist_matrix)) {
+      dist <- distances(dist_graph, v = V(dist_graph)[i], to = V(dist_graph)[j], mode = "all")
+      dist_matrix[j,i] <- v_dist*(delta^(dist[[1]])*log(t))} # A log of time is added to increase the influence of geodesic distance over time
+  }
+  return(dist_matrix)
+}
+
+# Function 2: Adds the weight to the main weight matrix
+geodist_function <- function(dist_matrix,meet_matrix){
+  meet_matrix <- meet_matrix + dist_matrix
+  return(meet_matrix)
+}
+
+```
+
+## ------------ Make friends matrix 
+```{r}
+# A function that create a matrix of 0's and 1's, where 1 represent a friendship. Whether a student is considered a friend is defined by the threshold u that determines the number of times two students must connect before they are considered "friends" - Note that one student can have named another student as their friend without it being a reciprocal friendship
+make_friends <- function(matrix_connections, u){ 
+  friends_matrix <- ifelse(matrix_connections > u, 1, 0)
+  return(friends_matrix)
+}
+
+```
+
+## ------------ Preferential attachment 
+```{r}
+# Based on theory of the emergence of social networks, preferential attachment entails that students who have many friends will also easier meet the others and thus have a larger chance of getting more friends 
+friends_function <- function(meet_matrix, friends_matrix, alpha_pa){
+  friends_graph <- igraph::graph_from_adjacency_matrix(friends_matrix, mode = "directed")
+  degree <- degree(friends_graph, mode= "all")
+  for (row in 1:nrow(meet_matrix)){
+    for (col in 1:ncol(meet_matrix)){
+      meet_matrix[row,col] <- meet_matrix[row,col] + ((degree[row]*alpha_pa)*(degree[col]*alpha_pa)) # A modification of the original preferential attachment ((d1+alpha)(d2+alpha))
+    }
+  }
+  return(meet_matrix)
+} 
+
+
+```
+
+## ------------ Connection base function
+```{r}
+# Assigning a random baseline chance of connecting to each pair of students 
+con_base_function <- function(con_weight_matrix, v_con) {
+  for (row in 1:nrow(con_weight_matrix)) {
+    for (col in 1:ncol(con_weight_matrix)) {
+      con_weight_matrix[row, col] <- con_weight_matrix[col,row] <- sample(c(1:v_con), 1, replace = T)
+    }
+  }
+  return(con_weight_matrix)
+}
+
+```
+
+## ------------ Friday bars: Connecting
+```{r}
+# Assigning a global increase in the probability of two students making a connection when there's a friday bar
+friday_bar_con <- function(con_weight_matrix, v_fridaybar_con, freq_fb,t) {
+  if ((t / freq_fb) %% 1 == 0) { 
+    con_weight_matrix <- con_weight_matrix + v_fridaybar_con
+  }
+  return(con_weight_matrix)
+}
+
+```
+
+## ------------ Lectures: Connecting 
+```{r}
+# Assigning a global increase in the probability of two students making a connection when there's a lecture
+lecture_con <- function(con_weight_matrix, v_lecture_con, freq_l,t) {
+  if ((t / freq_l) %% 1 == 0) {
+    con_weight_matrix <- con_weight_matrix + v_lecture_con
+  }
+  return(con_weight_matrix)
+}  
+
+```
+
+## ------------- Defining softmax function
+```{r}
+# The softmax function converts the weighted meeting matrix into a probability matrix where each the sum of each column is one. This step is done to create a list of probabilities for each student, containing their probability of meeting each of the other students
+
+softmax <- function(x) exp(x) / sum(exp(x)) # Creating the softmax function
+
+softmax_matrix_function <- function(meet_matrix) { # Applying the softmax to the weighted matrix to create the probability matrix
+  for (i in 1:ncol(meet_matrix)) {
+    meet_matrix[, i] <- softmax(meet_matrix[, i])
+  }
+  return(meet_matrix)
+}
+
+```
+
+# --------------------- ABM time - PARAMETERS
+## -------------------- Condensed list of parameters
+```{r eval=FALSE, include=FALSE}
+N                       ### Number of students 
+t_max                   ### Number of days the ABM should run
+group_nr                ### Number of studygroups      
+mean_st                 ### Mean of social trait
+sd_st                   ### Standard deviation of social trait
+meet_matrix             ### Main meeting matrix
+v_meet                  ### Upper limit for random baseline of meeting a student
+v_lockdown              ### Lockdown parameter
+v_studygroup            ### Added weight of being in the same study group
+divider                 ### Modulating effect of decay
+t                       ### Day of ABM
+v_friday_bar            ### Weight of Friday bar
+freq_fb                 ### Frequency of Friday bars
+v_lecture               ### Weight of lecture
+freq_l                  ### Frequency of lectures
+dist_matrix             ### Matrix to fill in geodesic distance
+matrix_connections      ### Main matrix where connections are stored
+delta                   ### Decay parameter for 
+v_dist                  ### Weight of geodesic distance
+dist_matrix             ### Dist matrix from before
+con_weight_matrix       ### Main matrix with weights of connecting
+v_con                   ### Baseline weight of connections
+v_fridaybar_con         ### Weight of Friday bar
+v_lecture_con           ### Weight of lecture
+u                       ### Threshold for amount of connections before you are friends  
+friends_matrix          ### Output matrix from make_friends function
+alpha_pa                ### Baseline weight for both agents if they have no friends
+matrix_soft             ### The weighted matrix we want to transform into probabilities
+pop_abm                 ### Tibble with the ABM output
+daily_con               ### How many students each student will meet a day
+
+```
+
+## -------------------- Function parameters
+### ------------------- Parameters: World and population
+```{r include=FALSE}
+# ------0. World parameters
+N <- 50                                       ### Number of students in a population 
+t_max <- 270                                  ### Number of days the ABM should run
+
+# ------1. Population parameter
+group_nr <- 10                                ### Number of studygroups
+mean_st <- 0                                  ### Mean of social trait
+sd_st <- 2                                    ### Standard deviation of social trait
+
+```
+
+### ------------------- Parameters: Meeting base 
+```{r include=FALSE}
+# ------2.meeting_base_function - Main meeting matrix with baseline "meeting parameter"
+
+meet_matrix <- matrix(0,ncol = N, nrow = N)    ### Main meeting matrix
+v_meet <- 2                                    ### Upper limit for random baseline
+```
+
+### ------------------- Parameters: Lockdown, meeting
+```{r include=FALSE}
+# ------3. Lockdown meeting parameter
+meet_matrix                                     ### Main meeting matrix
+v_lockdown <- 10                                ### Global decrease in meeting weight if lockdown is present
+```
+
+### ------------------- Parameters: Studygroup, meeting
+```{r include=FALSE}
+# ------4. study group_function 
+meet_matrix
+v_studygroup <- 60                              ### Added weight of being in studygroup
+divider <- 1000                                 ### Modulating effect of decay
+t                                               ### Day - used to decay the weight of studygroup over time
+
+```
+
+### ------------------- Parameters: Friday bars, meeting
+```{r include=FALSE}
+# -------5. friday_bar_function
+meet_matrix
+v_friday_bar <- 10                               ### Weight of Friday bar
+freq_fb <- 21                                    ### Frequency of bars
+t                                                ### Time
+```
+
+### ------------------- Parameters: Lectures, meeting
+```{r include=FALSE}
+# -------6. lecture_function
+meet_matrix
+v_lecture <- 3                                    ### Weight of lecture
+freq_l <- 3                                       ### Frequency of lectures
+t                                                 ### Time
+```
+
+### ------------------- Parameters: Geodesic distance
+```{r include=FALSE}
+# -------7. geodist_penalty_function dist_matrix, matrix_connections, delta, v_dist, t
+dist_matrix <- matrix(0,ncol = N, nrow = N)        ### Matrix to fill in geodesic distance
+matrix_connections <- matrix(0,ncol = N, nrow = N) ### Main matrix where connections are stored
+delta <- 0.8                                       ### Decay parameter
+v_dist <- 20                                       ### Weight of geodesic distance
+t                                                  ### Time
+
+# -------8. geodist_function (just to add them)
+dist_matrix                                        ### Dist matrix from before
+meet_matrix                                        ### Main matrix
+```
+### ------------------- Parameters: Connection base 
+```{r include=FALSE}
+# -------9. con_base_function
+con_weight_matrix <- matrix(0,ncol = N, nrow = N)  ### Main matrix with weights of connecting
+v_con <- 2                                         ### Baseline weight of connections
+```
+### ------------------- Parameters: Fridaybar, connecting
+```{r include=FALSE}
+# -------10. friday_bar_con 
+con_weight_matrix                                  ### con_weight_matrix from before
+v_fridaybar_con <- 5                               ### Weight of Friday bar
+freq_fb                                            ### Doesn't change
+t                                                  ### Doesn't change
+```
+### ------------------- Parameters: Lecture, connecting
+```{r include=FALSE}
+# --------11. lecture_con
+con_weight_matrix                                  ### con_weight_matrix from before
+v_lecture_con <- 2                                 ### Weight of lecture
+freq_l                                             ### Doesn't change from the meeting
+t                                                  ### Doesn't change from the meeting
+```
+### ------------------- Parameters: Make friends
+```{r include=FALSE}
+# --------12. Make friends
+matrix_connections                                 ### Main matrix where connections are stored
+u <- 15                                            ### Threshold for amount of connections before you are friends  
+friends_matrix <- matrix(0,ncol = N, nrow = N)     ### Output matrix from make_friends function
+```
+### ------------------- Parameters: Preferential attachment
+```{r include=FALSE}
+# --------13. Preferential attachment
+con_weight_matrix                                  ### con_weight_matrix from before
+friends_matrix                                     ### Output matrix from make_friends function
+alpha_pa <- 0.2                                    ### Baseline weight for both agents if they have no friends
+```
+### ------------------- Parameters: Softmax
+```{r eval=FALSE, include=FALSE}
+# --------14. Softmax: Converting weights into probabilities
+#matrix_soft                                       ### the weighted matrix we want to transform into probabilities
+```
+### ------------------- Parameters: ABM
+```{r include=FALSE}
+
+# --------15. ABM parameters
+pop_abm <- tibble(                                 ### Output tibble from ABM
+    generation = 1:t_max,
+    connections = rep(NA, t_max),
+    transitivity = rep(NA, t_max),
+    betweenness = rep(NA, t_max),
+    degree = rep(NA, t_max)
+  )
+daily_con <- 3                                     ### Number of agents each agent meets in a day
+
+```
+
+
+## -------------------- ABM Function
+```{r}
+# Creating the ABM function
+ABM_function <- function(matrix_connections,baseline_connect,u){ 
+for (t in 1:t_max) { # The loop runs for the number of days specified in t_max
+  samples <- 0 
+  while (samples < daily_con) { # For every "day", each student meet the number of students specified in 'daily_con'
+    for (i in 1:N) { # For loop for sampling a partner for each all students i 
+    
+      # Creating matrices full of zeros to fill using the functions
+      
+      ABM_meet_matrix <- matrix(0, ncol = N, nrow = N) # Main matrix for meeting weights
+      ABM_dist_matrix <- matrix(0,ncol = N, nrow = N) # Matrix for incorporating geodesic distance (see 'geodist function')  
+    
+      # Meeting functions that can be turned on/off for generating the Meeting weight matrix
+      
+      if (meeting_base == T){ # Meeting baseline function 
+        ABM_meet_matrix <- meeting_base_function(ABM_meet_matrix,v_meet) 
+      }
+      if (lockdown == T & t > 60){ # Lockdown function - this is only turned on after 60 days (one semester) to assimilate true events
+        ABM_meet_matrix <- lockdown_function(ABM_meet_matrix,v_lockdown) 
+        friday_bar <<- F # Removing friday bars and in-person lectures due to restrictions
+        lecture <<- F 
+        daily_con <<- 1
+      }
+      if (study_group == T) { # Study group function
+        ABM_meet_matrix <- study_group_function(ABM_meet_matrix,v_studygroup,t,divider) 
+      }
+      if (friday_bar == T){ # Friday bar function
+        ABM_meet_matrix <- friday_bar_function(ABM_meet_matrix,v_friday_bar, freq_fb,t) # Friday bar parameter
+      }
+      if (lecture == T){ # Lecture function
+        ABM_meet_matrix <- lecture_function(ABM_meet_matrix,v_lecture, freq_l,t) # Lecture parameter 
+      }
+      if (geodist == T){ # Geodesic distance function 
+        ABM_dist_matrix <- geodist_penalty_function(ABM_dist_matrix,matrix_connections,delta,v_dist,t) # G
+        ABM_meet_matrix <- geodist_function(ABM_dist_matrix,ABM_meet_matrix)
+      }
+      if (pref_att == T & t > 14){ # Preferential attachment function 
+        ABM_friends_matrix <- make_friends(matrix_connections,u)
+        ABM_meet_matrix <- friends_function(ABM_meet_matrix,ABM_friends_matrix, alpha_pa)
+      }
+      
+      print("Done w function")
+      print("Starting loop")
+      
+      # Replace weights for the students meeting themselves to be zero, as 'meeting yourself' is not included as a possibility in this ABM
+      for (row in 1:nrow(ABM_meet_matrix)){
+        for (col in 1:ncol(ABM_meet_matrix)){
+          if (row == col){
+            ABM_meet_matrix[row,col] <- 0
+          }
+        }
+        ABM_meet_matrix <- ABM_meet_matrix
+      }
+      ABM_meet_matrix_global <<- ABM_meet_matrix
+
+      print("done w loop")
+      
+      # Creating a probability matrix out of the meeting weights
+      prob_meet_matrix <- softmax_matrix_function(ABM_meet_matrix) 
+      prob_meet_matrix_global <<- prob_meet_matrix
+
+      prob_i <- tibble(ID = c(1:N), prob = prob_meet_matrix[, i]) # Selecting the column of probabilities for student i of meeting all other students
+      print("Done w softmax")
+    
+      # Sampling one student j based on the meeting probabilities to 'meet' student i  
+      j <-
+        sample(
+          x = prob_i$ID,
+          size = 1,
+          replace = FALSE,
+          prob = prob_i$prob
+        )
+    
+      ### Connection weight matrix
+      ABM_con_weight_matrix <- matrix(0, ncol = N, nrow = N)
+    
+      # Connection functions that can be turned on/off for generating the connection weight matrix
+      if (connection_base == T){ # Connection base function
+        con_base_function(ABM_con_weight_matrix,v_con)
+      }
+      if (friday_bar == T){ # Friday bar connection function
+        friday_bar_con(ABM_con_weight_matrix,v_fridaybar_con, freq_fb,t)
+      }
+      if (lecture == T){ # Lecture connection function
+        lecture_con(ABM_con_weight_matrix,v_lecture_con, freq_l,t)
+      }
+      
+      ### Connection probability matrix
+      prob_i_con <- # Student i's probability of connection to student j
+      ifelse(social_trait == T, 
+             ABM_con_weight_matrix[j, i] + baseline_connect + population$social_trait[i], # If social trait function is on, a social trait score is added for each student and thus the two students will vary a bit in how easily they make a connection
+             ABM_con_weight_matrix[j, i] + baseline_connect) 
+      prob_j_con <- # Student j's probability of connection to student i
+      ifelse(social_trait == T, 
+             ABM_con_weight_matrix[i, j] + baseline_connect + population$social_trait[j], 
+             ABM_con_weight_matrix[i, j] + baseline_connect)
+      print("Done w con_weight_matrix")
+      
+      ### Random Roll - a random number between 0 and 100 is sampled and used to determine if a pair of students i and j will connect
+      r <- sample(c(0:100), 1, replace = T) 
+    
+      print("Done w roll")
+      
+      if (r[1] <= prob_i_con) { # If the random number r is lower than the probability, student i connect to student j
+      matrix_connections[j, i] <- matrix_connections[j, i] + 1
+      }
+      if (r[1] <= prob_j_con) {
+      matrix_connections[i, j] <- matrix_connections[i, j] + 1 # If the random number r is lower than the probability, student j connect to student i
+      }
+      matrix_connections <<- matrix_connections # Updating the connection matrix  with possible new connections between the two students
+      
+      i <- i+1
+      
+      print(i)
+      print(paste("Running samples no.:", samples, sep=" "))
+      print(paste("Running tick no.:", t, sep=" "))
+    }
+   samples <-  samples + 1 
+   print(paste("Done with samples no.:", samples, sep=" "))
+   print(paste("Done with tick no.:", t, sep=" "))
+  }
+  # Saving matrices of friends during the time the ABM runs to see how it evolves and use it to investigate the effect of the parameters(every 20th day)
+    if (t == 20) { 
+      d20_friends <<- make_friends(matrix_connections, u) 
+    }
+    if (t == 40) {
+      d40_friends <<- make_friends(matrix_connections, u) 
+    }
+    if (t == 60) {
+      d60_friends <<- make_friends(matrix_connections, u) 
+    }
+    if (t == 80) {
+      d80_friends <<- make_friends(matrix_connections, u)
+    }
+    if (t == 100) {
+      d100_friends <<- make_friends(matrix_connections, u) 
+    }
+    if (t == 120) {
+      d120_friends <<- make_friends(matrix_connections, u) 
+    }
+    if (t == 140) {
+      d140_friends <<- make_friends(matrix_connections, u) 
+    }
+    if (t == 160) {
+      d160_friends <<- make_friends(matrix_connections, u)
+    }
+
+    # Saving the final matrix of friends generated from the threshold u and the connection matrix
+    final_friends <<- make_friends(matrix_connections, u)
+    
+    print("Done w final friends")
+  
+    # Specifying values to save as an ABM output (contains standard network measures for comparison with real data)
+    pop_abm$connections[t] <<- count_value(final_friends, 1) # Save total number of friendship connections (degrees)
+    
+    graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(final_friends, mode = "directed")
+    
+    graph_simple <- igraph::simplify( # Simplifying the graph
+      graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    ) 
+    
+    # Saving network measures in the ABM output
+    pop_abm$betweenness[t] <<- mean(betweenness(graph_simple)) 
+    pop_abm$transitivity[t] <<- transitivity(graph_simple)
+    pop_abm$degree[t] <<- mean(degree(graph_simple))
+}
+  graph_simple <<- graph_simple # Saving the graph as a global output
+}
+
+```
+
+## --------------------- Plotting the network
+To visually assess and compare different combinations of parameters, a plot function coloring nodes and clusters by studygroups is created
+```{r}
+## Creating a matrix with 1's when two students are in the same studygroup and 0 when they are not (column nr. = Student ID for student i and row nr. = student ID for student j)
+A_study <- matrix(0,ncol = N, nrow = N) 
+
+for(row in 1:nrow(A_study))
+    for(col in 1:ncol(A_study)) {
+      if(population[row,1] == population[col,1]){
+          A_study[row, col] <- 1 
+      }
+    }
+
+#Creating the function
+plot_network_function <- function(graph_simple,dot_size){ # 'dot_size' scales the size of the nodes 
+study_graph <- graph_from_adjacency_matrix(A_study, mode = "undirected") # creating a graph object from the study group matrix
+study_cluster <- cluster_louvain(as.undirected(study_graph)) # make clusters from the study group graph
+
+# Attaching attributes to the networks
+V(graph_simple)$frame.color <- "white" # ?
+E(graph_simple)$arrow.mode <- 0 # Removing arrows showing direction from edges 
+V(graph_simple)$size <- degree(graph_simple, mode="all")/dot_size # Scaling the size of the nodes to correspond to the number of degrees (i.e. how many friends the student has) 
+
+return(plot(study_cluster,graph_simple))
+}
+
+```
+
+
+# ---------------------- Running the ABM
+Before running the ABM, some initial parameters are set (which can be redined any time if desired).
+```{r}
+N <- 50
+daily_con <- 3
+population <- population_function(10,0,4) # 10 studiegrupper, 0 mean, 3 sd for social trait
+```
+
+# As a default, all parameters are turned off and the population is set to be fairly uniform in social trait
+```{r}
+social_trait <- F
+meeting_base <- F
+lockdown <- F
+study_group <- F
+friday_bar <- F
+lecture <- F
+geodist <-  F
+connection_base <- F
+pref_att <- F
+
+
+matrix_connections <- matrix(0,ncol = N, nrow = N)
+population <- population_function(10,0,1)
+
+```
+
+# ----------------------- Final models chosen based on testing and calibration
+
+## ---------------------- Control model: conditionNormal
+```{r}
+# Settings
+social_trait <- T
+meeting_base <- T
+lockdown <- F
+study_group <- T
+friday_bar <- T
+lecture <- T
+geodist <-  T
+connection_base <- T
+pref_att <- T
+
+# Parameter values
+v_lockdown <- 5
+v_con <- 4
+divider <- 100
+v_friday_bar <- 20
+freq_fb <- 21
+v_lecture <- 10
+freq_l <- 2
+v_lecture_con <- 5
+t_max <- 180
+daily_con <- 3
+v_studygroup <- 15
+v_meet <- 3
+v_dist <- 10 
+delta <- 0.35 
+freq_st <- 2
+alpha_pa <- 0.018
+
+population <- population_function(10,0,4) 
+
+# Resetting connections
+matrix_connections <- matrix(0,ncol = N, nrow = N)
+
+### RUN ABM
+ABM_NC <- ABM_function(matrix_connections, 50,23) # 
+abm_NC <- pop_abm
+
+```
+
+### --------------------- Saving progress for assessment: Control
+Network data for every 20 days is saved. This is not included in the analysis but is saved for future investigation
+```{r}
+# View degrees
+summary(degree(ABM_NC))
+plot_network_function(ABM_NC,1)+title("ABM_NC")
+
+ABM_NC <- as_edgelist(ABM_NC, names = TRUE) %>% 
+  as.data.frame()
+
+# Saving csv of ABM output
+write.csv(ABM_NC,"ABM_NC.csv")
+
+
+# Saving csvs of ABM timewise outputs 
+d20_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d20_friends, mode = "directed")
+    
+    d20_graph_simple <- igraph::simplify( # Simplifying the graph
+      d20_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d20_graph_edgelist <- as_edgelist(d20_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d20_graph_edgelist,"d20_graph_edgelist_ABM_NC.csv")
+
+d40_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d40_friends, mode = "directed")
+    
+    d40_graph_simple <- igraph::simplify( # Simplifying the graph
+      d40_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d40_graph_edgelist <- as_edgelist(d40_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d40_graph_edgelist,"d40_graph_edgelist_ABM_NC.csv")
+
+    d60_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d60_friends, mode = "directed")
+    
+    d60_graph_simple <- igraph::simplify( # Simplifying the graph
+      d60_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d60_graph_edgelist <- as_edgelist(d60_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d60_graph_edgelist,"d60_graph_edgelist_ABM_NC.csv")
+
+d80_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d80_friends, mode = "directed")
+    
+    d80_graph_simple <- igraph::simplify( # Simplifying the graph
+      d80_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d80_graph_edgelist <- as_edgelist(d80_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d80_graph_edgelist,"d80_graph_edgelist_ABM_NC.csv")
+    
+d100_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d100_friends, mode = "directed")
+    
+    d100_graph_simple <- igraph::simplify( # Simplifying the graph
+      d100_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d100_graph_edgelist <- as_edgelist(d100_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d100_graph_edgelist,"d100_graph_edgelist_ABM_NC.csv")
+
+
+d120_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d120_friends, mode = "directed")
+    
+    d120_graph_simple <- igraph::simplify( # Simplifying the graph
+      d120_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d120_graph_edgelist <- as_edgelist(d120_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d120_graph_edgelist,"d120_graph_edgelist_ABM_NC.csv")
+
+d140_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d140_friends, mode = "directed")
+    
+    d140_graph_simple <- igraph::simplify( # Simplifying the graph
+      d140_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d140_graph_edgelist <- as_edgelist(d140_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d140_graph_edgelist,"d140_graph_edgelist_ABM_NC.csv")
+
+    
+d160_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d160_friends, mode = "directed")
+    
+    d160_graph_simple <- igraph::simplify( # Simplifying the graph
+      d160_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d160_graph_edgelist <- as_edgelist(d160_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d160_graph_edgelist,"d160_graph_edgelistABM_NC.csv")
+```
+
+
+### --------------------- Plotting the network: Control
+```{r}
+
+# Specifying global parameters to create a population with the same id's as the ones used in the ABM
+N <-  50 # Number of students
+group_nr <- 10 # Numbe rof studygroups
+
+# Create population
+pop_plot <- tibble(ID = rep(c(1:N)), studygroup_no = rep(c(1:group_nr), N / group_nr))
+
+# Read in data and remove redundant ID column - the data is the same as 'ABM_NC.csv', but were run on a separate computer under a different name
+C18ABM_SG15 <- read_csv("C18ABM_SG15.csv")
+C18ABM_SG15 <- C18ABM_SG15[,-1]
+
+# Creating a graph from the egdes of the ABM output and appending studygroup number to be able to color the nodes according to what studygroup they are in.
+
+SG_overlay_NORMAL <-
+  igraph::graph_from_data_frame(d = C18ABM_SG15, 
+                        vertices = pop_plot, 
+                        directed = TRUE)
+
+
+SG_overlay_NORMAL_simple <- simplify(SG_overlay_NORMAL, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+
+# Creating attributes of node size scaled according to degree and removing arrows from the vertices
+V(SG_overlay_NORMAL_simple)$label <- "" 
+E(SG_overlay_NORMAL_simple)$arrow.mode <- 0
+deg <- degree(SG_overlay_NORMAL_simple, mode="all")
+V(SG_overlay_NORMAL_simple)$size <- deg
+
+# We need to use cluster_fast_greedy to get social clusters
+c_NORMAL = cluster_fast_greedy(as.undirected(SG_overlay_NORMAL_simple)) 
+
+# We also create the clusters showing the study groups - this can be used across all ABM data, as the people in the different studygroups has the same IDs across data_sets
+
+## Creating an adjacency matrix for who are in a studygroup
+A_study <- matrix(0,ncol = N, nrow = N) 
+for(row in 1:nrow(A_study))
+  for(col in 1:ncol(A_study)) {
+    if(population[row,1] == population[col,1]){
+          A_study[row, col] <- 1 
+    }
+  }
+### Make a graph of from the adjacency matrix
+study_graph <- graph_from_adjacency_matrix(A_study, mode = "undirected")
+
+### Simplify the graph
+study_graph_simple <- simplify(study_graph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+### Create the clusters
+c_SG <-  cluster_fast_greedy(as.undirected(study_graph_simple))
+
+#Introducing user-specified colors to avoid that R reuses the same colors for different studygroups: 
+plot(c_NORMAL, SG_overlay_NORMAL_simple,
+     layout = layout_nicely,
+     V(SG_overlay_NORMAL_simple)$color <-
+  ifelse(
+    V(SG_overlay_NORMAL_simple)$studygroup_no == "1",
+    "black",
+    ifelse(
+      V(SG_overlay_NORMAL_simple)$studygroup_no == "2",
+      "forestgreen",
+      ifelse(
+        V(SG_overlay_NORMAL_simple)$studygroup_no == "3",
+        "deeppink",
+        ifelse(
+          V(SG_overlay_NORMAL_simple)$studygroup_no == "4",
+          "steelblue",
+          ifelse(
+            V(SG_overlay_NORMAL_simple)$studygroup_no == "5",
+            "darkorange1",
+            ifelse(
+              V(SG_overlay_NORMAL_simple)$studygroup_no == "6",
+              "chartreuse3",
+              ifelse(
+                V(SG_overlay_NORMAL_simple)$studygroup_no == "7",
+                "cyan",
+                ifelse(
+                  V(SG_overlay_NORMAL_simple)$studygroup_no == "8",
+                  "blue",
+                  ifelse(
+                    V(SG_overlay_NORMAL_simple)$studygroup_no == "9",
+                    "violetred3",
+                    ifelse(
+                      V(SG_overlay_NORMAL_simple)$studygroup_no == "10",
+                      "grey","")))))))))),
+     edge.arrow.size = 0.3)+title("Social network for an ABM with a normal university structure, 
+Nodes colorcode: Studygroups, Cluster colorcode: Social clusters")
+par(las=1) 
+# mtext("S1 = black\nS2 = forestgreen\nS3 = deeppink\nS4 = steelblue\nS5 = darkorange1\nS6 = chartreuse3\nS7 = cyan\nS8 = blue\nS9 = violetred3\nS10 = grey", side=2, line = 1,adj=0)
+
+
+# Same plot as above, but with clustering in studygroups
+plot(c_SG, SG_overlay_NORMAL_simple,
+     layout = layout_nicely,
+     V(SG_overlay_NORMAL_simple)$color <-
+  ifelse(
+    V(SG_overlay_NORMAL_simple)$studygroup_no == "1",
+    "black",
+    ifelse(
+      V(SG_overlay_NORMAL_simple)$studygroup_no == "2",
+      "forestgreen",
+      ifelse(
+        V(SG_overlay_NORMAL_simple)$studygroup_no == "3",
+        "deeppink",
+        ifelse(
+          V(SG_overlay_NORMAL_simple)$studygroup_no == "4",
+          "steelblue",
+          ifelse(
+            V(SG_overlay_NORMAL_simple)$studygroup_no == "5",
+            "darkorange1",
+            ifelse(
+              V(SG_overlay_NORMAL_simple)$studygroup_no == "6",
+              "chartreuse3",
+              ifelse(
+                V(SG_overlay_NORMAL_simple)$studygroup_no == "7",
+                "cyan",
+                ifelse(
+                  V(SG_overlay_NORMAL_simple)$studygroup_no == "8",
+                  "blue",
+                  ifelse(
+                    V(SG_overlay_NORMAL_simple)$studygroup_no == "9",
+                    "violetred3",
+                    ifelse(
+                      V(SG_overlay_NORMAL_simple)$studygroup_no == "10",
+                      "grey","")))))))))),
+     edge.arrow.size = 0.3)+title("Social network for an ABM with a normal university structure, 
+Nodes colorcode: Studygroups, Cluster colorcode: Studygroups")
+par(las=1) 
+# mtext("S1 = black\nS2 = forestgreen\nS3 = deeppink\nS4 = steelblue\nS5 = darkorange1\nS6 = chartreuse3\nS7 = cyan\nS8 = blue\nS9 = violetred3\nS10 = grey", side=2, line = 1,adj=0)
+```
+
+## ---------------------- Control model: Lockdown
+```{r}
+# Settings
+social_trait <- T
+meeting_base <- T
+lockdown <- T
+study_group <- T
+friday_bar <- T
+lecture <- T
+geodist <-  T
+connection_base <- T
+pref_att <- T
+
+# Parameter values
+v_lockdown <- 5
+v_con <- 4
+divider <- 100
+v_friday_bar <- 20
+freq_fb <- 21
+v_lecture <- 10
+freq_l <- 2
+v_lecture_con <- 5
+t_max <- 180
+daily_con <- 3
+v_studygroup <- 15
+v_meet <- 3
+v_dist <- 10 
+delta <- 0.35 
+freq_st <- 2
+alpha_pa <- 0.018
+
+population <- population_function(10,0,4) 
+
+# Resetting connections
+matrix_connections <- matrix(0,ncol = N, nrow = N)
+
+### RUN ABM
+ABM_LC <- ABM_function(matrix_connections, 50,23) # 
+abm_LC <- pop_abm
+
+```
+
+### --------------------- Saving progress for assessment: Lockdown
+```{r}
+# View degrees
+summary(degree(ABM_LC))
+plot_network_function(ABM_LC,1)+title("ABM_LC")
+
+ABM_LC <- as_edgelist(ABM_LC, names = TRUE) %>% 
+  as.data.frame()
+
+# Saving csv of ABM output
+write.csv(ABM_LC,"ABM_LC.csv")
+
+
+# Saving csvs of ABM timewise outputs 
+d20_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d20_friends, mode = "directed")
+    
+    d20_graph_simple <- igraph::simplify( # Simplifying the graph
+      d20_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d20_graph_edgelist <- as_edgelist(d20_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d20_graph_edgelist,"d20_graph_edgelist_ABM_LC.csv")
+
+d40_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d40_friends, mode = "directed")
+    
+    d40_graph_simple <- igraph::simplify( # Simplifying the graph
+      d40_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d40_graph_edgelist <- as_edgelist(d40_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d40_graph_edgelist,"d40_graph_edgelist_ABM_LC.csv")
+
+    d60_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d60_friends, mode = "directed")
+    
+    d60_graph_simple <- igraph::simplify( # Simplifying the graph
+      d60_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d60_graph_edgelist <- as_edgelist(d60_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d60_graph_edgelist,"d60_graph_edgelist_ABM_LC.csv")
+
+d80_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d80_friends, mode = "directed")
+    
+    d80_graph_simple <- igraph::simplify( # Simplifying the graph
+      d80_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d80_graph_edgelist <- as_edgelist(d80_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d80_graph_edgelist,"d80_graph_edgelist_ABM_LC.csv")
+    
+d100_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d100_friends, mode = "directed")
+    
+    d100_graph_simple <- igraph::simplify( # Simplifying the graph
+      d100_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d100_graph_edgelist <- as_edgelist(d100_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d100_graph_edgelist,"d100_graph_edgelist_ABM_LC.csv")
+
+
+d120_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d120_friends, mode = "directed")
+    
+    d120_graph_simple <- igraph::simplify( # Simplifying the graph
+      d120_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d120_graph_edgelist <- as_edgelist(d120_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d120_graph_edgelist,"d120_graph_edgelist_ABM_LC.csv")
+
+d140_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d140_friends, mode = "directed")
+    
+    d140_graph_simple <- igraph::simplify( # Simplifying the graph
+      d140_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d140_graph_edgelist <- as_edgelist(d140_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d140_graph_edgelist,"d140_graph_edgelist_ABM_LC.csv")
+
+    
+d160_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d160_friends, mode = "directed")
+    
+    d160_graph_simple <- igraph::simplify( # Simplifying the graph
+      d160_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d160_graph_edgelist <- as_edgelist(d160_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d160_graph_edgelist,"d160_graph_edgelistABM_LC.csv")
+```
+
+
+### --------------------- Plotting the network: Lockdown
+```{r}
+
+# Load in the data - this is equal to 'ABM_LC.csv'
+C19ABM_SG15_LOCKDOWN_TRUE <- read_csv("C19ABM_SG15_LOCKDOWN_TRUE.csv")
+C19ABM_SG15_LOCKDOWN_TRUE <- C19ABM_SG15_LOCKDOWN_TRUE[,-1]
+
+
+# Creating a graph from the edges of the ABM output and appending studygroup number to be able to color the nodes according to what studygroup they are in
+SG_overlay_LOCKDOWN <-
+  igraph::graph_from_data_frame(d = C19ABM_SG15_LOCKDOWN_TRUE, # same edges as originally
+                        vertices = pop_plot, # this df has our new sg column
+                        directed = TRUE)
+
+## Simplifying the graph
+SG_overlay_LOCKDOWN_simple <- simplify(SG_overlay_LOCKDOWN, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+
+# Creating attributes of node size scaled according to degree and removing arrows from the vertices
+V(SG_overlay_LOCKDOWN_simple)$label <- "" 
+E(SG_overlay_LOCKDOWN_simple)$arrow.mode <- 0
+deg <- degree(SG_overlay_LOCKDOWN_simple, mode="all")
+V(SG_overlay_LOCKDOWN_simple)$size <- deg
+
+# We need to use cluster_fast_greedy to get social clusters
+c_LOCKDOWN = cluster_fast_greedy(as.undirected(SG_overlay_LOCKDOWN_simple)) # 7 overall SOCIAL clusters
+
+#Introducing user-specified colors to avoid that R reuses the same colors for different studygroups: 
+plot(c_LOCKDOWN, SG_overlay_LOCKDOWN_simple,
+     layout = layout_nicely,
+     V(SG_overlay_LOCKDOWN_simple)$color <-
+  ifelse(
+    V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "1",
+    "black",
+    ifelse(
+      V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "2",
+      "forestgreen",
+      ifelse(
+        V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "3",
+        "deeppink",
+        ifelse(
+          V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "4",
+          "steelblue",
+          ifelse(
+            V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "5",
+            "darkorange1",
+            ifelse(
+              V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "6",
+              "chartreuse3",
+              ifelse(
+                V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "7",
+                "cyan",
+                ifelse(
+                  V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "8",
+                  "blue",
+                  ifelse(
+                    V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "9",
+                    "violetred3",
+                    ifelse(
+                      V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "10",
+                      "grey","")))))))))),
+     edge.arrow.size = 0.3)+title("Social network for an ABM with a lockdown intervention, 
+Nodes colorcode: Studygroups, Cluster colorcode: Social clusters")
+par(las=1) 
+# mtext("S1 = black\nS2 = forestgreen\nS3 = deeppink\nS4 = steelblue\nS5 = darkorange1\nS6 = chartreuse3\nS7 = cyan\nS8 = blue\nS9 = violetred3\nS10 = grey", side=2, line = 1,adj=0)
+
+# Same plot as above, but with clusters based on studygroups
+plot(c_SG, SG_overlay_LOCKDOWN_simple,
+     layout = layout_nicely,
+     V(SG_overlay_LOCKDOWN_simple)$color <-
+  ifelse(
+    V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "1",
+    "black",
+    ifelse(
+      V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "2",
+      "forestgreen",
+      ifelse(
+        V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "3",
+        "deeppink",
+        ifelse(
+          V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "4",
+          "steelblue",
+          ifelse(
+            V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "5",
+            "darkorange1",
+            ifelse(
+              V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "6",
+              "chartreuse3",
+              ifelse(
+                V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "7",
+                "cyan",
+                ifelse(
+                  V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "8",
+                  "blue",
+                  ifelse(
+                    V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "9",
+                    "violetred3",
+                    ifelse(
+                      V(SG_overlay_LOCKDOWN_simple)$studygroup_no == "10",
+                      "grey","")))))))))),
+     edge.arrow.size = 0.3)+title("Social network for an ABM with a lockdown intervention, 
+Nodes colorcode: Studygroups, Cluster colorcode: Studygroups")
+par(las=1) 
+# mtext("S1 = black\nS2 = forestgreen\nS3 = deeppink\nS4 = steelblue\nS5 = darkorange1\nS6 = chartreuse3\nS7 = cyan\nS8 = blue\nS9 = violetred3\nS10 = grey", side=2, line = 1,adj=0)
+```
+
+# ----------------------- ROBUSTNESS AND VALIDATION CHECKS: EXAMPLE
+
+## ---------------------- Example: Varying social trait
+
+Varying the mean of social trait to investigate the difference in the structure of the network
+
+```{r}
+# Settings: Lower social trait, mean = -2
+social_trait <- T
+meeting_base <- T
+lockdown <- F
+study_group <- T
+friday_bar <- T
+lecture <- T
+geodist <-  T
+connection_base <- T
+pref_att <- T
+
+# Parameters
+v_lockdown <- 10
+v_con <- 4
+divider <- 100
+v_friday_bar <- 20
+freq_fb <- 21
+v_lecture <- 10
+freq_l <- 2
+v_lecture_con <- 5
+v_fridaybar_con <- 5
+t_max <- 180
+daily_con <- 3
+v_studygroup <- 15 
+v_meet <- 3
+v_dist <- 10 
+delta <- 0.35 
+freq_st <- 2
+alpha_pa <- 0.018
+
+##### THE PARAMETER VARIED IN THIS CHECK #####
+population <- population_function(10,-2,4) 
+
+# RUN ABM AND SAVE OUTPUT
+ABM_antisocial <- ABM_function(matrix_connections, 50,23) 
+abm_antisocial <- pop_abm
+
+# Summarise degree for comparis
+summary(degree(ABM_antisocial))
+
+# Visual assessment of the network
+plot_network_function(ABM_antisocial,1)+title("ABM_antisocial")
+
+ABM_edgelist_antisocial <- as_edgelist(ABM_antisocial, names = TRUE) %>% 
+  as.data.frame()
+
+# Saving csv of ABM output
+write.csv(ABM_edgelist_antisocial,"ABM_edgelist_antisocial.csv")
+
+# Saving csvs of ABM timewise outputs ( skal køres igen for 24 May så vi har dem gennem tid)
+d20_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d20_friends, mode = "directed")
+    
+    d20_graph_simple <- igraph::simplify( # Simplifying the graph
+      d20_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d20_graph_edgelist <- as_edgelist(d20_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d20_graph_edgelist,"d20_graph_edgelist_antisocial.csv")
+
+d40_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d40_friends, mode = "directed")
+    
+    d40_graph_simple <- igraph::simplify( # Simplifying the graph
+      d40_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d40_graph_edgelist <- as_edgelist(d40_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d40_graph_edgelist,"d40_graph_edgelist_antisocial.csv")
+
+    d60_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d60_friends, mode = "directed")
+    
+    d60_graph_simple <- igraph::simplify( # Simplifying the graph
+      d60_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d60_graph_edgelist <- as_edgelist(d60_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d60_graph_edgelist,"d60_graph_edgelist_antisocial.csv")
+
+d80_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d80_friends, mode = "directed")
+    
+    d80_graph_simple <- igraph::simplify( # Simplifying the graph
+      d80_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d80_graph_edgelist <- as_edgelist(d80_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d80_graph_edgelist,"d80_graph_edgelist_antisocial.csv")
+    
+d100_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d100_friends, mode = "directed")
+    
+    d100_graph_simple <- igraph::simplify( # Simplifying the graph
+      d100_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d100_graph_edgelist <- as_edgelist(d100_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d100_graph_edgelist,"d100_graph_edgelist_antisocial.csv")
+
+
+d120_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d120_friends, mode = "directed")
+    
+    d120_graph_simple <- igraph::simplify( # Simplifying the graph
+      d120_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d120_graph_edgelist <- as_edgelist(d120_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d120_graph_edgelist,"d120_graph_edgelist_antisocial.csv")
+
+d140_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d140_friends, mode = "directed")
+    
+    d140_graph_simple <- igraph::simplify( # Simplifying the graph
+      d140_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d140_graph_edgelist <- as_edgelist(d140_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d140_graph_edgelist,"d140_graph_edgelist_antisocial.csv")
+
+    
+d160_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d160_friends, mode = "directed")
+    
+    d160_graph_simple <- igraph::simplify( # Simplifying the graph
+      d160_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d160_graph_edgelist <- as_edgelist(d160_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d160_graph_edgelist,"d160_graph_edgelist_antisocial.csv")
+```
+
+```{r}
+# Settings: Mean social trait = 0
+social_trait <- T
+meeting_base <- T
+lockdown <- F
+study_group <- T
+friday_bar <- T
+lecture <- T
+geodist <-  T
+connection_base <- T
+pref_att <- T
+
+# Parameters
+v_lockdown <- 10
+v_con <- 4
+divider <- 100
+v_friday_bar <- 20
+freq_fb <- 21
+v_lecture <- 10
+freq_l <- 2
+v_lecture_con <- 5
+v_fridaybar_con <- 5
+t_max <- 180
+daily_con <- 3
+v_studygroup <- 15 
+v_meet <- 3
+v_dist <- 10 
+delta <- 0.35 
+freq_st <- 2
+alpha_pa <- 0.018
+
+##### THE PARAMETER VARIED IN THIS CHECK #####
+population <- population_function(10,0,4) 
+
+# RUN ABM AND SAVE OUTPUT
+ABM_antisocial <- ABM_function(matrix_connections, 50,23) 
+abm_antisocial <- pop_abm
+
+# Summarise means for comparison
+summary(degree(ABM_socialmean0))
+
+# Visual assessment of the network
+plot_network_function(ABM_socialmean0,1)+title("ABM_socialmean0")
+
+ABM_edgelist_socialmean0 <- as_edgelist(ABM_socialmean0, names = TRUE) %>% 
+  as.data.frame()
+
+# Saving csv of ABM output
+write.csv(ABM_edgelist_socialmean0,"ABM_edgelist_socialmean0.csv")
+
+# Saving csvs of ABM timewise outputs ( skal køres igen for 24 May så vi har dem gennem tid)
+d20_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d20_friends, mode = "directed")
+    
+    d20_graph_simple <- igraph::simplify( # Simplifying the graph
+      d20_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d20_graph_edgelist <- as_edgelist(d20_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d20_graph_edgelist,"d20_graph_edgelist_socialmean0.csv")
+
+d40_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d40_friends, mode = "directed")
+    
+    d40_graph_simple <- igraph::simplify( # Simplifying the graph
+      d40_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d40_graph_edgelist <- as_edgelist(d40_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d40_graph_edgelist,"d40_graph_edgelist_socialmean0.csv")
+
+    d60_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d60_friends, mode = "directed")
+    
+    d60_graph_simple <- igraph::simplify( # Simplifying the graph
+      d60_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d60_graph_edgelist <- as_edgelist(d60_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d60_graph_edgelist,"d60_graph_edgelist_socialmean0.csv")
+
+d80_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d80_friends, mode = "directed")
+    
+    d80_graph_simple <- igraph::simplify( # Simplifying the graph
+      d80_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d80_graph_edgelist <- as_edgelist(d80_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d80_graph_edgelist,"d80_graph_edgelist_socialmean0.csv")
+    
+d100_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d100_friends, mode = "directed")
+    
+    d100_graph_simple <- igraph::simplify( # Simplifying the graph
+      d100_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d100_graph_edgelist <- as_edgelist(d100_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d100_graph_edgelist,"d100_graph_edgelist_socialmean0.csv")
+
+
+d120_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d120_friends, mode = "directed")
+    
+    d120_graph_simple <- igraph::simplify( # Simplifying the graph
+      d120_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d120_graph_edgelist <- as_edgelist(d120_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d120_graph_edgelist,"d120_graph_edgelist_socialmean0.csv")
+
+d140_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d140_friends, mode = "directed")
+    
+    d140_graph_simple <- igraph::simplify( # Simplifying the graph
+      d140_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d140_graph_edgelist <- as_edgelist(d140_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d140_graph_edgelist,"d140_graph_edgelist_socialmean0.csv")
+
+    
+d160_graph <- # Creating a graph from the friendship matrix to extract network measures
+     igraph::graph_from_adjacency_matrix(d160_friends, mode = "directed")
+    
+    d160_graph_simple <- igraph::simplify( # Simplifying the graph
+      d160_graph,
+      remove.multiple = TRUE,
+      remove.loops = TRUE,
+      edge.attr.comb = igraph_opt("edge.attr.comb")
+    )
+    
+    d160_graph_edgelist <- as_edgelist(d160_graph_simple, names = TRUE) %>% 
+  as.data.frame()
+    
+    write.csv(d160_graph_edgelist,"d160_graph_edgelist_socialmean0.csv")
+    
+```
+

@@ -1,0 +1,1409 @@
+---
+title: "SNA & BayesianAnalysis"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Readme
+This file pertains to the Computational Modeling / Social & Cultural Dynamics Exam by Brams & Fomsgaard, Cognitive Science BSc 2019-2022, Aarhus University.
+
+All necessary files are put in the repository together with this .Rmd and loaded in the first chunk below.
+
+# Setup
+```{r}
+pacman::p_load(tidyverse,
+               here,
+               network,
+               igraph,
+               ggraph,
+               tidygraph,
+               patchwork,
+               cowplot,
+               rethinking,
+               brms,
+               data.table,
+               lme4,
+               geodist,
+               readxl,
+               wesanderson,
+               brms,
+               rethinking,
+               tidyr,
+               loo,
+               tidybayes
+               )
+
+# Load in needed files
+NetworkMetricsAndConnections <- read.csv("NetworkMetricsAndConnections_Wide.csv") %>%  # Descriptive stats
+  mutate(year = as.factor(year))
+
+IngroupOutgroup_Long <- read.csv("IngroupOutgroup_Long.csv") # Needed for Bayesian comparison of NON-SG/SG-connections across years
+
+# POSTHOC, TBA: SurveyMergedMoti_Long <- read.csv("SurveyMergedMoti_Long.csv") # Needed for Bayesian Survey analysis
+
+# POSTHOC, TBA: SurveyMergedLone_Long <- read.csv("SurveyMergedMoti_Long.csv") # Needed for Bayesian Survey analysis
+
+```
+
+# Data visualization - Familiarizing ourselves with the data
+
+## - Degrees (3 types)
+```{r}
+
+# All degrees
+NetworkMetricsAndConnections %>%
+  ggplot(aes(x = degrees, fill = year, color = year)) + geom_density(alpha = 0.5) + theme_minimal() + facet_wrap(.~year)+ggtitle(
+"Total degrees - facet-wrapped per Year")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p1 <- NetworkMetricsAndConnections %>%
+  ggplot(aes(x = degrees, fill = year, color = year)) + geom_density(alpha = 0.5) + theme_minimal() +ggtitle(
+"Total degrees for C18 and C19")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p1_box <- NetworkMetricsAndConnections %>%
+  ggplot(aes(y = degrees, x = year, fill = year, color = year)) + geom_boxplot(alpha = 0.5) + theme_minimal() +ggtitle(
+"Total degrees for C18 and C19")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Out-degrees
+NetworkMetricsAndConnections %>% ggplot(aes(x = degrees_out, fill = year, color = year))+
+  geom_density(alpha = 0.5)+
+  theme_minimal()+
+  facet_wrap(.~year)+ggtitle(
+"Out-degrees - facet-wrapped per Year")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p2 <- NetworkMetricsAndConnections %>%
+  ggplot(aes(x = degrees_out, fill = year, color = year)) + geom_density(alpha = 0.5) + theme_minimal() +ggtitle(
+"Out-degrees for C18 and C19")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p2_box <- NetworkMetricsAndConnections %>%
+  ggplot(aes(y = degrees_out, x = year, fill = year, color = year)) + geom_boxplot(alpha = 0.5) + theme_minimal() +ggtitle(
+"Out-degrees for C18 and C19") +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+# In-degrees
+NetworkMetricsAndConnections %>% ggplot(aes(x = degrees_in, fill = year, color = year))+
+  geom_density(alpha = 0.5)+
+  theme_minimal()+
+  facet_wrap(.~year)+ggtitle(
+"In-degrees - facet-wrapped per Year")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p3 <- NetworkMetricsAndConnections %>%
+  ggplot(aes(x = degrees_in, fill = year, color = year)) + geom_density(alpha = 0.5) + theme_minimal() +ggtitle(
+"In-degrees for C18 and C19")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p3_box <- NetworkMetricsAndConnections %>%
+  ggplot(aes(y = degrees_in, x = year, fill = year, color = year)) + geom_boxplot(alpha = 0.5) + theme_minimal() +ggtitle(
+"In-degrees for C18 and C19")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+p1|p2|p3
+p1_box|p2_box|p3_box
+```
+
+## Degree distribution 
+### (not included in the paper)
+```{r}
+# Degree distributions
+degree_dist_2018 <- as.data.frame(degree_distribution(CogSci_2018_n4_igraph, cumulative = F)) %>% rename(relative_freq=`degree_distribution(CogSci_2018_n4_igraph, cumulative = F)`)  %>% mutate(
+  index = c(0:23)
+)
+degree_dist_2018 %>% ggplot(aes(x = index, y = relative_freq))+geom_point()+theme_minimal()+ggtitle("Relative proportion of nodes with degree k - 2018")
+
+degree_dist_2019 <- as.data.frame(degree_distribution(CogSci_2019_n4_igraph, cumulative = F)) %>% rename(relative_freq=`degree_distribution(CogSci_2019_n4_igraph, cumulative = F)`) %>% mutate(
+  index = c(0:16)
+)
+degree_dist_2019 %>% ggplot(aes(x = index, y = relative_freq))+geom_point()+theme_minimal()+ggtitle("Relative proportion of nodes with degree k - 2019")
+
+```
+
+## Studygroup / Non-studygroup connections
+```{r}
+# Boxplot showing the counts for ingroup vs outgroup connections for a student for the different cohorts 
+IngroupOutgroup_Long %>%  
+  ggplot(aes(
+  y = count,
+  x = group,
+  color = group,
+  fill = group)) + 
+  geom_boxplot(aes(alpha = 0.7)) + 
+  theme_minimal() + facet_wrap(. ~ year) +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2, 4)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2, 4)]) + 
+  ggtitle("Studygroup (in) vs. non-studygroup (out) connections per student for each cohort") +
+  xlab("Group") + ylab("Number of connections per student") + 
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+## Betweenness
+```{r}
+# Betweenness
+NetworkMetricsAndConnections %>% ggplot(aes(x = year, y = betweenness, fill = year, color = year))+
+  geom_boxplot(alpha = 0.5)+
+  theme_minimal()+ggtitle("Betweenness")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+NetworkMetricsAndConnections %>% ggplot(aes(x = betweenness, fill = year, color = year))+
+  geom_density(alpha = 0.5)+
+  theme_minimal()+
+  facet_wrap(.~year)+ggtitle("Betweenness, facet-wrapped per Year")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+NetworkMetricsAndConnections %>%
+  ggplot(aes(x = betweenness, fill = year, color = year)) + geom_density(alpha = 0.5) + theme_minimal() + ggtitle(
+"Most students in 2018 have lower betweenness centrality - fewer act as bridges - 
+compared to 2019, where many students have moderate levels of betweenness,
+indicating many serve as bridges connecting other nodes.")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Transitivity
+```{r}
+# Transitivity
+NetworkMetricsAndConnections %>% ggplot(aes(x = year, y = transitivity, color = year, fill = year))+
+  geom_boxplot(alpha = 0.5)+
+  theme_minimal()+ggtitle("Transitivity")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+NetworkMetricsAndConnections %>% ggplot(aes(x = transitivity, fill = year, color = year))+
+  geom_density(alpha = 0.5)+
+  theme_minimal()+
+  facet_wrap(.~year)+ggtitle("Transitivity, facet-wrapped per Year")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+NetworkMetricsAndConnections %>%
+  ggplot(aes(x = transitivity, fill = year, color = year)) + geom_density(alpha = 0.5) + theme_minimal()+ ggtitle(
+"Transitivity is distributed similarly for the two years")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Eigen-centrality
+```{r}
+# Eigen centrality
+NetworkMetricsAndConnections %>% ggplot(aes(x = year, y = eigen_centrality, color = year, fill = year))+
+  geom_boxplot(alpha = 0.5)+
+  theme_minimal()+ggtitle("Eigen-centrality")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+NetworkMetricsAndConnections %>% ggplot(aes(x = year, y = eigen_centrality, color = year, fill = year))+
+  geom_density(alpha = 0.5)+
+  theme_minimal()+
+  facet_wrap(.~year)+ggtitle("Eigen-centrality, facet-wrapped per Year")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+NetworkMetricsAndConnections %>%
+  ggplot(aes(x = eigen_centrality, color = year, fill = year)) + geom_density(alpha = 0.5) + 
+  theme_minimal() + ggtitle(
+"Lower values of eigen-centrality is a little more frequent for 2019")+
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2,4)])+
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2,4)]) +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+## Summary-block for the different metrics
+```{r}
+# Degrees summaries
+NetworkMetricsAndConnections %>% group_by(year) %>% summarise(
+  mean_in = mean(degrees_in),
+  mean_out = mean(degrees_out),
+  mean_all = mean(degrees),
+  sd_in = sd(degrees_in),
+  sd_out = sd(degrees_out),
+  sd_all = sd(degrees)
+)
+
+# Betweenness, transitivity & eigen-centrality summaries (NA's removed in transitivity because of low connections)
+NetworkMetricsAndConnections %>%
+  subset(!is.na(transitivity)) %>%
+  group_by(year) %>%
+  summarise(
+    mean_b = mean(betweenness),
+    mean_t = mean(transitivity),
+    mean_ec = mean(eigen_centrality),
+    sd_b = sd(betweenness),
+    sd_t = sd(transitivity),
+    sd_ec = sd(eigen_centrality)
+  )
+
+```
+
+# Preparing the Bayesian model building
+In the following, we take the initial steps in the bayesian workflow in brms: 
+We first specify the model formula, use get_prior to get suggested priors, and set priors, that will be simulated in the chunk after.
+
+```{r}
+# Reassign in data for brevity, and ensuring the classes of the two predictors
+d <- IngroupOutgroup_Long
+d$year <- as.factor(d$year)
+d$group <- as.factor(d$group)
+
+# Assessing statistics for studygroup sizes for both cohorts
+Sizes18 <- c(3,4,5,5,4,4,5,3,4,5,3,5) # These are the studygroup sizes for C18
+Sizes19 <- c(5,5,4,3,5,5,4,4,4,2,5) # These are the studygroup sizes for C19
+
+summary(Sizes19) 
+summary(Sizes18)
+```
+
+## Model building-workflow
+```{r}
+# 1. Main model formula
+model <- bf(count ~ 0 + year:group + (0+group|ID)) 
+
+# 2. Using get_prior() to get list of suggested priors
+get_prior(model, data = d,  family = poisson())
+
+# 3. Setting priors.
+priors_for_model_poisson <- c(prior(normal(1.7, 0.5), class = b), # As we assign the same prior for all betas, we only need one line
+                              prior(lkj(5), class = cor),
+                              prior(normal(0, 0.1), class = sd))  # We also assign the same sd prior for all the sd-priors needed
+```
+
+These priors are simulated and checked in the following chunk, but we have not included all tests, as there were quite many tests previous to ending up choosing the numbers specified above in priors_for_model_poisson.
+
+We have above specified priors with normal(), but as we are working with a poisson model, we need to run these through exp() or rlnorm() to get a distribution of lambdas expected by these specifications in our priors, as we are working with a non-linear link function of log. Here, we choose to sample from a lognormal and use rlnorm(). Then, we need to run these generated lambdas (rates), amount of counts per unit, through the rpois() command, to sample from a poisson using the lambdas just generated to see what our generated lambads finally means for our distributions of counts. Doing this yields a discrete scale. 
+
+## Checking and simulating priors:
+The following distributions called through dens() should be run multiple times as the long tails are not always described well with only one run. 
+```{r}
+# --- BETA
+# We can check the data to see what might be reasonable to expect the model knows. As can be seen, the overall mean is about 5, varying a bit across the groups - and the same goes for the standard deviation.
+d %>% summarise(mean = mean(count)) 
+d %>% group_by(year,group) %>% summarise(mean = mean(count)) # means
+d %>% group_by(year,group) %>% summarise(sd = sd(count)) # spread
+
+# Simulating: 1) rlnorm, 2) rpois
+lambda0 <- rlnorm(10000,1.7,0.4)
+
+dens(lambda0)+title("BETA: Distribution over expected rates (lambdas):
+Prior of normal(mu = 1.7, sd = 0.4) run through rlnorm()") 
+
+simplehist(rpois(10000,lambda0))+title("BETA: Expected counts for beta-priors, (Distribution of lambdas from before run through the rpois())") 
+
+# --- STANDARD DEVIATION for varying effects
+lambda1 <- rlnorm(10000,0,0.1)
+
+dens(lambda1)+title("SD: Distribution over expected rates (lambdas):
+Prior of normal(mu = 0, sd = 0.1) run through rlnorm()") 
+
+simplehist(rpois(10000,lambda1))+title("SD: Expected counts for SD-prior, (Distribution of lambdas from before run through the rpois())") 
+
+```
+
+Now that we have simulated our priors to see what they imply for our modelling, we continue on to the remaining steps of the bayesian workflow:
+
+## Running model: Prior pred. / Posterior pred. checks
+```{r}
+# 4. Running model for the prior predictive check
+model_brm_prior <- brm(
+  model,
+  d,
+  family=poisson(),
+  prior=priors_for_model_poisson,
+  sample_prior = "only"
+)
+
+pp_check(model_brm_prior, nsamples = 100) + ggtitle("Prior predictive check: Model count ~ 0 + year:group + (0 + group | ID)")
+
+# 5. Running actual model and running posterior check
+model_brm <- brm(
+  model,
+  d,
+  family=poisson(),
+  prior=priors_for_model_poisson,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), # splitting each chain into 2
+  control = list(
+    adapt_delta = 0.99, # learning parameter set to 0.99 for better parameters (but slower)
+    max_treedepth = 20) # setting forecasting to avoid u-turns up from default of 15
+)
+
+pp_check(model_brm, nsamples = 100)+ggtitle("Posterior predictive check: Model count ~ 0 + year:group + (0 + group | ID)")
+
+```
+
+## Summary & Chain checks
+```{r}
+# 6. Summary of model
+summary(model_brm)
+
+# 7. Chain checks
+plot(model_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_brm, 
+           pars = c('b_year2018:groupoutgroup', 
+                    'b_year2019:groupoutgroup', 
+                    'b_year2018:groupingroup',
+                    'b_year2019:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_brm, 
+           pars = c('b_year2018:groupoutgroup', 
+                    'b_year2019:groupoutgroup', 
+                    'b_year2018:groupingroup',
+                    'b_year2019:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+# Conditional effects plot
+plot(conditional_effects(model_brm))
+```
+
+## Posterior samples
+```{r}
+# 8. Assessing whether the model learned from seeing the data
+posterior <- posterior_samples(model_brm)
+
+# Posterior learning plots for in-group connections per student for each cohort against the prior
+posterior %>% 
+  pivot_longer(c(`b_year2018:groupingroup`,`b_year2019:groupingroup`,`prior_b`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  ggtitle("Posterior learning plots for in-group connections per student for each cohort against the prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Posterior learning plots for out-group connections per student for each cohort against the prior
+posterior %>% 
+  pivot_longer(c(`b_year2018:groupoutgroup`,`b_year2019:groupoutgroup`,`prior_b`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 4, 2)]) +
+  ggtitle("Posterior learning plots for out-group connections per student for each cohort against the prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Posterior learning plots for standard deviation for varying effect with regularized prior
+posterior %>% 
+  pivot_longer(c(`sd_ID__groupingroup`,`sd_ID__groupoutgroup`,`prior_sd_ID`),names_to = "Estimate") %>% 
+  mutate(value_exp = exp(value)) %>%  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(2, 4, 3)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(2, 4, 3)]) +
+  ggtitle("Posterior learning plots for standard deviation for varying effect with regularized prior") +
+  xlab("Effect Size") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+
+# LKJ Prior
+posterior %>%
+  pivot_longer(c(`cor_ID__groupingroup__groupoutgroup`,`prior_cor_ID`),names_to = "Estimate") %>% 
+  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(3, 2)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(3, 2)]) +
+  ggtitle("Posterior learning plots for correlation prior") +
+  xlab("Difference in effect size between groups") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot for in and out-group estimates
+posterior %>% 
+  mutate(difference_ingroup = exp(`b_year2018:groupingroup` - `b_year2019:groupingroup`),difference_outgroup = exp(`b_year2018:groupoutgroup` - `b_year2019:groupoutgroup`)) %>%
+  pivot_longer(c("difference_ingroup","difference_outgroup"),names_to = "Estimate") %>% 
+  ggplot(aes(x = value, color = Estimate, fill = Estimate)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  scale_color_manual(values = wes_palette("Darjeeling1")[c(4, 3)]) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[c(4, 3)]) +
+  ggtitle("Between-cohort difference (exponentiated) in effect sizes for ingroup and outgroup") +
+  xlab("Exponentiated difference between years in effect size for groups") +
+  ylab("Density") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Just for good measure - here the same learning plots are, using the classic hypothesis() command 
+plot(hypothesis(model_brm, "year2018:groupingroup > 0"))
+plot(hypothesis(model_brm, "year2019:groupingroup > 0"))
+plot(hypothesis(model_brm, "year2018:groupoutgroup > 0"))
+plot(hypothesis(model_brm, "year2019:groupoutgroup > 0"))
+
+# Beta-estimates, exponentiated
+dens(exp(posterior$`b_year2018:groupingroup`))+title("Exponentiated, Beta_2018ingroup")
+dens(exp(posterior$`b_year2018:groupoutgroup`))+title("Exponentiated, Beta_2018outgroup")
+dens(exp(posterior$`b_year2019:groupingroup`))+title("Exponentiated, Beta_2019ingroup")
+dens(exp(posterior$`b_year2019:groupoutgroup`))+title("Exponentiated, Beta_2019outgroup")
+
+# Making a better plot over the estimates for out-/in-group
+posterior %>%
+  mutate(
+    out2018  = exp(`b_year2018:groupoutgroup`),
+    out2019 = exp(`b_year2019:groupoutgroup`)
+  ) %>%
+  pivot_longer(out2018:out2019) %>%
+  
+  # plot for out
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1],
+    alpha = 0.8
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "# of non-studygroup (out) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Cohort (year)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+posterior %>%
+  mutate(
+    in2018  = exp(`b_year2018:groupingroup`),
+    in2019 = exp(`b_year2019:groupingroup`)
+  ) %>%
+  pivot_longer(in2018:in2019) %>%
+  
+  # plot for in
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "# of studygroup (in) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Cohort (year)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot
+posterior %>%
+  mutate(
+    difference_in  = exp(`b_year2018:groupingroup`)-exp(`b_year2019:groupingroup`),
+    difference_out = exp(`b_year2018:groupoutgroup`)-exp(`b_year2019:groupoutgroup`)
+  ) %>%
+  pivot_longer(difference_in:difference_out) %>%
+  
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[4:3]) +
+  labs(title = "# of difference in counts of friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Studygroup (in) and Non-studygroup (out)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+## Assessing evidence
+```{r}
+# 9. Assessing evidence for the different hypotheses
+
+hypothesis(
+  model_brm,
+  c(
+    "year2018:groupoutgroup > year2019:groupoutgroup",
+    "year2018:groupoutgroup = year2019:groupoutgroup",
+    "year2018:groupoutgroup < year2019:groupoutgroup"
+  )
+)
+
+hypothesis(
+  model_brm,
+  c(
+    "year2018:groupingroup > year2019:groupingroup",
+    "year2018:groupingroup = year2019:groupingroup",
+    "year2018:groupingroup < year2019:groupingroup"
+  )
+)
+
+```
+
+## Trying the same model, but with a main effect for Year to inspect the interaction in another way
+```{r}
+
+# 1. Main model formula
+model_main <- bf(count ~ 0 + year + year:group + (0+group|ID)) 
+
+# 2. Using get_prior() to get list of suggested priors
+get_prior(model_main, data = d,  family = poisson())
+
+# 3. Setting priors.
+priors_for_model_main <- c(
+  prior(normal(1.7, 0.5), class = b, coef = year2018),
+  prior(normal(1.7, 0.5), class = b, coef = year2019),
+  prior(normal(0.5, 0.2), class = b, coef = year2018:groupoutgroup), # priors expecting a bit less than the ones set for main
+  prior(normal(0.5, 0.2), class = b, coef = year2019:groupoutgroup), # priors expecting a bit less than the ones set for main
+  prior(lkj(5), class = cor),
+  prior(normal(0, 0.1), class = sd)) 
+
+# Simulating the priors for interaction slopes
+lambda_main <- rlnorm(10000,0.5,0.5)
+dens(lambda_main)
+dens(rpois(1000,lambda_main))
+
+# 4. Running model for the prior predictive check
+model_main_brm_prior <- brm(
+  model_main,
+  d,
+  family=poisson(),
+  prior=priors_for_model_main,
+  sample_prior = "only"
+)
+
+pp_check(model_main_brm_prior, nsamples = 100) + ggtitle("Prior predictive check: Model count ~ 0 + year + year:group + (0 + group | ID)")
+
+# 5. Running actual model and running posterior check
+model_main_brm <- brm(
+  model_main,
+  d,
+  family=poisson(),
+  prior=priors_for_model_main,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2),
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(model_main_brm, nsamples = 100)+ggtitle("Posterior predictive check: Model count ~ 0 + year + year:group + (0 + group | ID)")
+
+# 6. Summary check
+summary(model_main_brm)
+
+# 7. Chain checks
+plot(model_main_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_main_brm, 
+           pars = c('b_year2018', 
+                    'b_year2019', 
+                    'b_year2018:groupoutgroup',
+                    'b_year2019:groupoutgroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_main_brm, 
+           pars = c('b_year2018', 
+                    'b_year2019', 
+                    'b_year2018:groupoutgroup',
+                    'b_year2019:groupoutgroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+# 8. Assessing whether model learned - just using hypothesis() for brevity to make learning plots
+posterior_main <- posterior_samples(model_main_brm)
+
+plot(hypothesis(model_main_brm, "year2018 > 0"))
+plot(hypothesis(model_main_brm, "year2019 > 0"))
+plot(hypothesis(model_main_brm, "year2018 > year2019"))
+plot(hypothesis(model_main_brm, "year2018:groupoutgroup > 0"))
+plot(hypothesis(model_main_brm, "year2019:groupoutgroup > 0"))
+
+
+# 9. Assessing evidence
+hypothesis(model_main_brm, "year2018 > year2019") # no evidence in favor
+hypothesis(model_main_brm, "year2018:groupoutgroup  > year2019:groupoutgroup ") # Inf evidence in favor
+
+```
+
+# --- Model comparison & influential points
+Does it even help having the interaction in describing our data? In this chunk, we'll investigate that by making all kinds of simpler models to describe our data, and comparing them with our interaction model used in the analysis using the LOOIC criterion. 
+
+We'll simulate lambda's for the betas and the standard deviation.
+
+## -- Defining all models, simulating and setting priors
+```{r}
+
+# 1. Defining models
+model_year <- bf(count ~ 0 + year + (1|ID))
+model_group <- bf(count ~ 0 + group + (1|ID))
+model_year_group <- bf(count ~ 0 + year + group + (0+group|ID))
+model_year_group_int <- bf(count ~ 0 + year:group + (1|ID)) 
+model_year_group_int_0group <- bf(count ~ 0 + year:group + (0+group|ID)) # This is the one used in the paper
+
+# 2. Getting priors for all of them
+get_prior(model_year, d, family = poisson())
+get_prior(model_group, d, family = poisson())
+get_prior(model_year_group, d, family = poisson())
+get_prior(model_year_group_int, d, family = poisson())
+get_prior(model_year_group_int_0group, d, family = poisson())
+
+# 3. Simulating and setting vague priors for all models
+# -- Standard deviation (same for all)
+lambda_sd <- rlnorm(10000,0,0.1)
+dens(lambda_sd)+title("LSD: Normal prior for sd of (mu = 0, sd = 0.1) run through rlnorm()") 
+simplehist(rpois(10000,lambda_sd))+title("LSD: Distributions of lambdas run through rpois()") 
+
+# -- Betas (same for all, but contextualized with group_by() and all models use 0 intercept)
+# -- model_year
+d %>% group_by(year) %>% summarise(mean = mean(count))
+
+lambda_year <- rlnorm(10000,1.7,0.4)
+dens(lambda_year)+title("LYear: Normal prior of (mu = 1.7, sd = 0.4) run through rlnorm()") 
+simplehist(rpois(10000,lambda_year))+title("LYear: Distributions of lambdas run through rpois()") 
+
+prior_year <- c( 
+  prior(normal(1.7,0.4), class = b, coef = year2018),
+    prior(normal(1.7,0.4), class = b, coef = year2019),
+  prior(normal(0, 0.1), class = sd)
+  )
+
+# -- model_group
+d %>% group_by(group) %>% summarise(mean = mean(count))
+
+lambda_group <- rlnorm(10000,1.7,0.4)
+dens(lambda_group)+title("LGroup: Normal prior of (mu = 1.7, sd = 0.4) run through rlnorm()") 
+simplehist(rpois(10000,lambda_group))+title("LGroup: Distributions of lambdas run through rpois()") 
+
+prior_group <- c( 
+  prior(normal(1.7,0.4), class = b, coef = groupingroup),
+    prior(normal(1.7,0.4), class = b, coef = groupoutgroup),
+  prior(normal(0, 0.1), class = sd)
+  )
+
+# -- model_year_group
+d %>% group_by(group, year) %>% summarise(mean = mean(count))
+
+lambda_year_group <- rlnorm(10000,1.7,0.4) 
+dens(lambda_year_group)+title("LYG: Normal prior of (mu = 1.7, sd = 0.4) run through rlnorm()") 
+simplehist(rpois(10000,lambda_year_group))+title("LYG: Distributions of lambdas run through rpois()") 
+
+prior_year_group <- c( 
+  prior(normal(1.7,0.4), class = b),
+  prior(normal(0, 0.1), class = sd)
+  )
+
+# -- model_year_group_int
+lambda_year_group_int <- rlnorm(10000,1.7,0.4)
+dens(lambda_year_group_int)+title("LYG_int: Normal prior of (mu = 1.7, sd = 0.4) run through rlnorm()") 
+simplehist(rpois(10000,lambda_year_group_int))+title("LYG_int: Distributions of lambdas run through rpois()") 
+
+prior_year_group_int <- c( 
+  prior(normal(1.7,0.4), class = b),
+  prior(normal(0, 0.1), class = sd)
+  )
+
+# -- model_year_group_int_0group
+lambda_year_group_int_0group <- rlnorm(10000,1.7,0.4)
+dens(lambda_year_group_int_0group)+title("LYG_int0group: Normal prior of (mu = 1.7, sd = 0.4) run through rlnorm()") 
+simplehist(rpois(10000,lambda_year_group_int_0group))+title("LYG_int0group: Distributions of lambdas run through rpois()") 
+
+prior_year_group_int_0group <- c( 
+  prior(normal(1.7,0.4), class = b),
+  prior(lkj(5), class = cor),
+  prior(normal(0, 0.1), class = sd)
+  )
+
+```
+
+## Running models for comparison
+```{r}
+# 4. Running models
+# -- Running model_year
+model_year_prior_check <- brm(
+  model_year,
+  d,
+  family=poisson(),
+  prior=prior_year,
+  sample_prior = "only"
+)
+
+pp_check(model_year_prior_check, nsamples = 100)+ggtitle("Prior pred: count ~ year + (0+group|ID) ")
+
+model_year_brm <- brm(
+  model_year,
+  d,
+  family=poisson(),
+  prior=prior_year,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(model_year_brm, nsamples = 100)+ggtitle("Post pred: count ~ year + (0+group|ID) ")
+
+# -- Running model_group
+model_group_prior_check <- brm(
+  model_group,
+  d,
+  family=poisson(),
+  prior=prior_group,
+  sample_prior = "only"
+)
+
+pp_check(model_group_prior_check, nsamples = 100)+ggtitle("Prior pred: count ~ group + (0+group|ID) ")
+
+model_group_brm <- brm(
+  model_group,
+  d,
+  family=poisson(),
+  prior=prior_group,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(model_group_brm, nsamples = 100)+ggtitle("Post pred: count ~ group + (0+group|ID) ")
+
+# -- Running model_year_group
+model_year_group_prior_check <- brm(
+  model_year_group,
+  d,
+  family=poisson(),
+  prior=prior_year_group,
+  sample_prior = "only"
+)
+
+pp_check(model_year_group_prior_check, nsamples = 100)+ggtitle("Prior pred: count ~ year + group + (0+group|ID) ")
+
+model_year_group_brm <- brm(
+  model_year_group,
+  d,
+  family=poisson(),
+  prior=prior_year_group,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2),
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20)
+)
+
+pp_check(model_year_group_brm, nsamples = 100)+ggtitle("Post pred: count ~ year + group + (0+group|ID) ")
+
+# -- Running model_year_group_int
+model_year_group_int_prior_check <- brm(
+  model_year_group_int,
+  d,
+  family=poisson(),
+  prior=prior_year_group_int,
+  sample_prior = "only"
+)
+
+pp_check(model_year_group_int_prior_check, nsamples = 100)+ggtitle("Prior pred: count ~ year:group + (1|ID) ")
+
+model_year_group_int_brm <- brm(
+  model_year_group_int,
+  d,
+  family=poisson(),
+  prior=prior_year_group_int,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2),
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 20)
+)
+
+pp_check(model_year_group_brm, nsamples = 100)+ggtitle("Post pred: count ~ year:group + (1|ID)")
+
+# -- Running model_year_group_int_0group
+model_year_group_int_0group_prior_check <- brm(
+  model_year_group_int_0group,
+  d,
+  family=poisson(),
+  prior=prior_year_group_int_0group,
+  sample_prior = "only"
+)
+
+pp_check(model_year_group_int_0group_prior_check, nsamples = 100)+ggtitle("Prior pred: count ~ year:group + (0+group|ID) ")
+
+model_year_group_int_0group_brm <- brm(
+  model_year_group_int_0group,
+  d,
+  family = poisson(),
+  prior = prior_year_group_int_0group,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend = "cmdstanr",
+  threads = threading(2),
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 20)
+)
+
+pp_check(model_year_group_int_0group_brm, nsamples = 100)+ggtitle("Post pred: count ~ year:group + (0+group|ID)")
+```
+
+## Checking comparison-models 
+
+```{r}
+# 5. Summary of models
+summary(model_year_brm) 
+summary(model_group_brm) 
+summary(model_year_group_brm) # High Rhat of 1.01, and low effective sample sizes in the 100's-450's
+summary(model_year_group_int_brm) 
+summary(model_year_group_int_0group_brm)
+```
+
+## Chain checks
+```{r}
+# 6. Chain checks
+# -- model_year
+plot(model_year_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_year_brm, 
+           pars = c('b_year2018', 
+                    'b_year2019', 
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_year_brm, 
+           pars = c('b_year2018', 
+                    'b_year2019', 
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+# -- model_group
+plot(model_group_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_group_brm, 
+           pars = c('b_groupingroup', 
+                    'b_groupoutgroup', 
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_group_brm, 
+           pars = c('b_groupingroup', 
+                    'b_groupoutgroup', 
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+# -- model_year_group
+plot(model_year_group_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_year_group_brm, 
+           pars = c('b_year2018', 
+                    'b_year2019',
+                    'b_groupoutgroup', 
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup',
+                    'cor_ID__groupingroup__groupoutgroup' # Here, the bad mixing is quite visible
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_year_group_brm, 
+           pars = c('b_year2018', 
+                    'b_year2019',
+                    'b_groupoutgroup', 
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup',
+                    'cor_ID__groupingroup__groupoutgroup' # Also here
+                    )) +
+  theme_classic()
+
+# -- model_year_group_int
+plot(model_year_group_int_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_year_group_int_brm, 
+           pars = c('b_year2018:groupingroup', 
+                    'b_year2019:groupingroup',
+                    'b_year2018:groupoutgroup',
+                    'b_year2019:groupoutgroup',
+                    'sd_ID__Intercept'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_year_group_int_brm, 
+           pars = c('b_year2018:groupingroup', 
+                    'b_year2019:groupingroup',
+                    'b_year2018:groupoutgroup',
+                    'b_year2019:groupoutgroup',
+                    'sd_ID__Intercept' 
+                    )) +
+  theme_classic()
+
+# -- model_year_group_int_0group
+plot(model_year_group_int_0group_brm) # hit return to see next
+
+bayesplot::mcmc_trace(model_year_group_int_0group_brm, 
+           pars = c('b_year2018:groupoutgroup', 
+                    'b_year2019:groupoutgroup', 
+                    'b_year2018:groupingroup',
+                    'b_year2019:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(model_year_group_int_0group_brm, 
+           pars = c('b_year2018:groupoutgroup', 
+                    'b_year2019:groupoutgroup', 
+                    'b_year2018:groupingroup',
+                    'b_year2019:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+```
+
+## Adding the LOOIC criterion and comparing
+```{r}
+# 7. Add LOO criterion to all models
+set.seed(123)
+
+model_year_brm <- add_criterion(model_year_brm, c("loo"))
+model_group_brm <- add_criterion(model_group_brm, c("loo"))
+model_year_group_brm <- add_criterion(model_year_group_brm, c("loo")) 
+model_year_group_int_brm <- add_criterion(model_year_group_int_brm, c("loo")) 
+model_year_group_int_0group_brm <- add_criterion(model_year_group_int_0group_brm, c("loo"))
+
+# Calling loo_compare 
+loo_compare(model_year_brm,
+            model_group_brm,
+            model_year_group_brm,
+            model_year_group_int_brm,
+            model_year_group_int_0group_brm,
+            criterion = "loo")
+
+# Getting LOO-IC's
+loo(model_year_brm)
+loo(model_group_brm)
+loo(model_year_group_brm)
+loo(model_year_group_int_brm)
+loo(model_year_group_int_0group_brm)
+
+# Checking influential points
+loo(model_year_brm) %>% 
+  pareto_k_ids(threshold = 0.7) 
+
+loo(model_group_brm) %>% 
+  pareto_k_ids(threshold = 0.7) 
+
+loo(model_year_group_brm) %>% 
+  pareto_k_ids(threshold = 0.7) 
+
+loo(model_year_group_int_brm) %>% 
+  pareto_k_ids(threshold = 0.7) 
+
+loo(model_year_group_int_0group_brm) %>% 
+  pareto_k_ids(threshold = 0.7) 
+
+# Calling loo_model_weights
+loo_model_weights(
+            model_year_brm,
+            model_group_brm,
+            model_year_group_brm,
+            model_year_group_int_brm,
+            model_year_group_int_0group_brm)
+```
+
+## -- Zooming in on influential points for Model 1, used in the SocCult paper
+In the chunk below, Model 1's influential points will be removed. With the seed(123), Model 1 returns 20 influential observations, but because of the stochastic nature of the sampling process, the amount of influential observations can differ for every run of the model.
+```{r}
+# Diagnostics plot over influential poins
+plot(loo(model_year_group_int_0group_brm), label_points = TRUE)
+
+# Trying to remove influential points
+set.seed(123)
+
+# Where are the influential points?
+t <- loo(model_year_group_int_0group_brm) %>% 
+  pareto_k_ids(threshold = 0.7) 
+
+d %>% 
+  slice(t) 
+
+# Removing influential points
+d_no_inf_points <- d[-c(3,7,21,23,41,43,49,55,57,65,67,83,85,95,97,101,121,139,185,195), ]
+```
+
+## Fitting model again to the cleaned dataset w/o infl. datapints
+```{r}
+# 8. Fitting model to dataset w/o influentials
+set.seed(123)
+
+NO_INFL_model_year_group_int_0group_brm <- brm(
+  model_year_group_int_0group,
+  d_no_inf_points,
+  family = poisson(),
+  prior = prior_year_group_int_0group,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend = "cmdstanr",
+  threads = threading(2),
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 20)
+)
+
+# 9. Checking chains
+plot(NO_INFL_model_year_group_int_0group_brm) # hit return to see next
+
+bayesplot::mcmc_trace(NO_INFL_model_year_group_int_0group_brm, 
+           pars = c('b_year2018:groupoutgroup', 
+                    'b_year2019:groupoutgroup', 
+                    'b_year2018:groupingroup',
+                    'b_year2019:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+bayesplot::mcmc_rank_overlay(NO_INFL_model_year_group_int_0group_brm, 
+           pars = c('b_year2018:groupoutgroup', 
+                    'b_year2019:groupoutgroup', 
+                    'b_year2018:groupingroup',
+                    'b_year2019:groupingroup',
+                    'cor_ID__groupingroup__groupoutgroup',
+                    'sd_ID__groupingroup',
+                    'sd_ID__groupoutgroup'
+                    )) +
+  theme_classic()
+
+# 10. Summary
+summary(NO_INFL_model_year_group_int_0group_brm)
+
+# 11. Assessing evidence
+hypothesis(
+  NO_INFL_model_year_group_int_0group_brm,
+  c(
+    "year2018:groupoutgroup > year2019:groupoutgroup",
+    "year2018:groupoutgroup = year2019:groupoutgroup",
+    "year2018:groupoutgroup < year2019:groupoutgroup"
+  )
+)
+
+hypothesis(
+  NO_INFL_model_year_group_int_0group_brm,
+  c(
+    "year2018:groupingroup > year2019:groupingroup",
+    "year2018:groupingroup = year2019:groupingroup",
+    "year2018:groupingroup < year2019:groupingroup"
+  )
+)
+
+```
+
+### Plotting to assess robustness of effect: model on the no-influentials dataset
+```{r}
+# 12. Posterior samples for plotting 
+NO_INFL_posterior<- posterior_samples(NO_INFL_model_year_group_int_0group_brm)
+
+# 13. Plotting for out
+NO_INFL_posterior %>%
+  mutate(
+    out2018  = exp(`b_year2018:groupoutgroup`),
+    out2019 = exp(`b_year2019:groupoutgroup`)
+  ) %>%
+  pivot_longer(out2018:out2019) %>%
+  
+  # plot for out
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1],
+    alpha = 0.8
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "W/O influentials: # of non-studygroup (out) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Cohort (year)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+NO_INFL_posterior %>%
+  mutate(
+    in2018  = exp(`b_year2018:groupingroup`),
+    in2019 = exp(`b_year2019:groupingroup`)
+  ) %>%
+  pivot_longer(in2018:in2019) %>%
+  
+  # plot for in
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Zissou1")[c(1,2)]) +
+  labs(title = "W/O influentials: # of studygroup (in) friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Cohort (year)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+# Difference plot
+NO_INFL_posterior %>%
+  mutate(
+    difference_in  = exp(`b_year2018:groupingroup`)-exp(`b_year2019:groupingroup`),
+    difference_out = exp(`b_year2018:groupoutgroup`)-exp(`b_year2019:groupoutgroup`)
+  ) %>%
+  pivot_longer(difference_in:difference_out) %>%
+  
+  ggplot(aes(x = value, y = name, fill = name)) +
+  stat_halfeye(
+    point_interval = median_qi,
+    .width = .95,
+    color = wes_palette("Darjeeling1")[1]
+  ) +
+  scale_fill_manual(values = wes_palette("Darjeeling1")[4:3]) +
+  labs(title = "W/O influentials: # of difference in counts of friends for each cohort",
+       x = "# friends (exp(Beta-estimate))",
+       y = "Studygroup (in) and Non-studygroup (out)") +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none") + theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+
+# --- Robustness check of priors
+## Test 1: Much wider SD prior
+```{r}
+# Prior setting
+robust1_priors_for_model_poisson <- c(
+  prior(
+    normal(1.7, 0.4), class = b),
+  prior(lkj(5), class = cor),
+  prior(normal(0,1.5), class = sd) 
+)
+
+# Simulating the prior
+# --- SD for varying effects
+lambda3 <- rlnorm(10000,0,1.5)
+dens(lambda3)+title("R1: Normal prior of (mu = 0, sd = 1.5) run through rlnorm()") 
+simplehist(rpois(10000,lambda3))+title("R1: Distributions of lambdas run through rpois()") 
+
+robust1_model_brm_prior <- brm(
+  model,
+  d_no_inf_points,
+  family=poisson(),
+  prior=robust1_priors_for_model_poisson,
+  sample_prior = "only"
+)
+
+pp_check(robust1_model_brm_prior, nsamples = 100) + ggtitle("Robustness check 1, 
+Prior predictive check - Wider SD prior")
+
+robust1_model_brm <- brm(
+  model,
+  d_no_inf_points,
+  family=poisson(),
+  prior=robust1_priors_for_model_poisson,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(robust1_model_brm, nsamples = 100)+ggtitle("Robustness check 1, 
+Posterior predictive check - Wider SD prior")
+
+```
+
+## Test 2: Much wider Beta priors
+```{r}
+# Prior setting
+robust2_priors_for_model_poisson <- c(
+  prior(
+    normal(2, 2), class = b),
+  prior(lkj(5), class = cor),
+  prior(normal(0,0.1), class = sd) 
+)
+
+# Simulating the prior
+# --- Beta
+lambda4 <- rlnorm(10000,2,2)
+dens(lambda4)+title("R2: Beta, Normal prior of (mu = 2, sd = 2) run through rlnorm()") 
+simplehist(rpois(10000,lambda4))+title("R2: Distributions of lambdas run through rpois()") 
+
+robust2_model_brm_prior <- brm(
+  model,
+  d_no_inf_points,
+  family=poisson(),
+  prior=robust2_priors_for_model_poisson,
+  sample_prior = "only"
+)
+
+pp_check(robust2_model_brm_prior, nsamples = 100) + ggtitle("Robustness check 2, 
+Prior predictive check - Wider Beta prior")
+
+robust2_model_brm <- brm(
+  model,
+  d_no_inf_points,
+  family=poisson(),
+  prior=robust2_priors_for_model_poisson,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(robust1_model_brm, nsamples = 100)+ggtitle("Robustness check 2, 
+Posterior predictive check - Wider Beta prior")
+
+```
+
+## Test 3: Wide Beta and SD prior at the same time
+```{r}
+# Prior setting
+robust3_priors_for_model_poisson <- c(
+  prior(
+  normal(2,2), class = b),
+  prior(lkj(5), class = cor),
+  prior(normal(0,1.5), class = sd) 
+)
+
+robust3_model_brm_prior <- brm(
+  model,
+  d_no_inf_points,
+  family=poisson(),
+  prior=robust3_priors_for_model_poisson,
+  sample_prior = "only"
+)
+
+pp_check(robust3_model_brm_prior, nsamples = 100) + ggtitle("Robustness check 3, 
+Prior predictive check - Wider Beta prior + Wider SD prior")
+
+robust3_model_brm <- brm(
+  model,
+  d_no_inf_points,
+  family=poisson(),
+  prior=robust3_priors_for_model_poisson,
+  sample_prior = T,
+  chains = 4,
+  iter = 3000,
+  warmup = 1000,
+  cores = 4,
+  backend="cmdstanr",
+  threads = threading(2), 
+  control = list(
+    adapt_delta = 0.99, 
+    max_treedepth = 20) 
+)
+
+pp_check(robust3_model_brm, nsamples = 100)+ggtitle("Robustness check 3, 
+Posterior predictive check - Wider Beta prior + Wider SD prior")
+
+```
+

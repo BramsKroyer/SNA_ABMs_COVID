@@ -1,0 +1,1016 @@
+---
+title: "SNA Preprocessing"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# ReadMe
+This file pertains to the Computational Modeling / Social & Cultural Dynamics Exam by Brams & Fomsgaard, Cognitive Science BSc 2019-2022, Aarhus University.
+
+All necessary files are put in the repository together with this .Rmd and loaded in the first chunk below.
+
+Order of contents of the document is 
+1. Preprocessing
+2. Data visualization of network data
+3. SNA & Summary statistics of network data measures
+
+# Setup
+```{r}
+pacman::p_load(tidyverse,
+               here,
+               network,
+               igraph,
+               ggraph,
+               tidygraph,
+               patchwork,
+               cowplot,
+               rethinking,
+               brms,
+               data.table,
+               lme4,
+               geodist,
+               readxl,
+               wesanderson)
+
+# Reading in data for C19 edges
+CogSci_2019_n4_edges <- read_csv("Archive/CogSci19S4_NetworkFriends.csv")
+
+# Reading in data for C19 studygroup edges
+CogSci_2019_n4_studygroups_edges <- read_csv("Archive/edges_CogSci_2019_n4_StudyGroup.csv")
+
+# Reading in data for C18 edges
+CogSci_2018_n4_edges <- read_csv("Archive/NetworkData_CogSci18.csv")
+
+# Read in data for C18 studygroup edges - this csv is not in edges, but already in nodes, so we do not need to do the conversion as we do for the others
+CogSci_2018_n4_studygroups_nodes <- read_csv("Archive/sg18_anon.csv") %>% rename(ID = names)
+
+```
+
+# --- Data for C19, 4th sem.
+```{r}
+# Removing NA's
+CogSci_2019_n4_edges <- CogSci_2019_n4_edges %>% subset(!is.na(to) & !is.na(from) & !is.na(weight))
+
+# Creating a list of unique IDs for nodes
+CogSci_2019_nodes <- data.frame(ID = unique(c(
+  CogSci_2019_n4_edges$from,
+  CogSci_2019_n4_edges$to)))
+
+# Remove NA's and corrupted data
+CogSci_2019_nodes <- CogSci_2019_nodes %>% subset(!is.na(ID))
+
+CogSci_2019_n4_edges <- CogSci_2019_n4_edges %>% subset(
+   !(to %in% c("fake0", "fake", "1")) & !(from %in% c("fake0", "fake", "1"))
+ ) %>% subset(
+   !is.na(to) & !is.na(from) & !is.na(weight)
+   )
+
+# Data is now cleaned, removing the isolates now (dropouts):
+# Creating duplicates to work with
+t_CogSci_2019_nodes <- CogSci_2019_nodes
+t_CogSci_2019_n4_edges <- CogSci_2019_n4_edges
+
+# Which values of ID in "nodes" are NOT in "edge"? 
+remove_these_in_from <-
+  data.frame(t_CogSci_2019_nodes$ID[!t_CogSci_2019_nodes$ID %in% t_CogSci_2019_n4_edges$from])
+
+remove_these_in_to <-
+  data.frame(t_CogSci_2019_nodes$ID[!t_CogSci_2019_nodes$ID %in% t_CogSci_2019_n4_edges$to])
+
+# Which values of V1 in from are not in the other? (Apologies for weird names)
+remove_these_in_from$isinboth <-
+  remove_these_in_from$t_CogSci_2019_nodes.ID..t_CogSci_2019_nodes.ID..in..t_CogSci_2019_n4_edges.from. %in% remove_these_in_to$t_CogSci_2019_nodes.ID..t_CogSci_2019_nodes.ID..in..t_CogSci_2019_n4_edges.to.
+
+# Rename that column
+remove_these_in_from <- remove_these_in_from %>% rename(ID = t_CogSci_2019_nodes.ID..t_CogSci_2019_nodes.ID..in..t_CogSci_2019_n4_edges.from.)
+
+# Take the ones were it is true, that they aren't there:
+remove_these_from_nodes <- remove_these_in_from %>% filter(isinboth == TRUE)
+remove_these_from_nodes$isinboth <- NULL
+
+# Remove from nodes: Which values of "CogSci_2019_nodes" are NOT in the "remove these"? 
+CogSci_2019_nodes <- data.frame(CogSci_2019_nodes$ID[!CogSci_2019_nodes$ID %in% remove_these_from_nodes$ID])
+
+# Rename that column
+CogSci_2019_nodes <- CogSci_2019_nodes %>% rename(ID = CogSci_2019_nodes.ID..CogSci_2019_nodes.ID..in..remove_these_from_nodes.ID.)
+NROW(unique(CogSci_2019_nodes$ID)) # Should be 49
+
+```
+
+## --- Data Viz 1 for C19, 4th sem.
+```{r}
+
+# Using igraph to plot 
+CogSci_2019_n4_igraph <-
+  graph_from_data_frame(d = CogSci_2019_n4_edges,
+                        vertices = CogSci_2019_nodes,
+                        directed = TRUE)
+
+CogSci_2019_n4_igraph <- simplify(CogSci_2019_n4_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+V(CogSci_2019_n4_igraph)$frame.color <- "white"
+V(CogSci_2019_n4_igraph)$color <- "orange"
+V(CogSci_2019_n4_igraph)$label <- "" 
+E(CogSci_2019_n4_igraph)$arrow.mode <- 0
+E(CogSci_2019_n4_igraph)$width <- edge_attr(CogSci_2019_n4_igraph)$weight/2
+V(CogSci_2019_n4_igraph)$size <- degree(CogSci_2019_n4_igraph, mode="all")
+
+```
+
+## --- Data Viz 2 for C19, 4th sem.: Community detections 
+```{r}
+# Using cluster walktrap
+wc4 <- cluster_walktrap(CogSci_2019_n4_igraph)
+modularity(wc4)
+membership(wc4)
+
+# First plot
+plot(wc4, CogSci_2019_n4_igraph)+title("First look at communities in 4th semester")
+
+# Second plot
+set.seed(123)
+clp <- cluster_louvain(as.undirected(CogSci_2019_n4_igraph))
+plot(clp, CogSci_2019_n4_igraph)+title("Second look (using cluster_louvain) at communities in 4th semester")
+```
+
+## --- Studygroups - Preproc. and Data Viz C19, 4th sem.
+```{r}
+
+# Clean
+CogSci_2019_n4_studygroups_edges <- CogSci_2019_n4_studygroups_edges %>% subset(!is.na(to) & !is.na(from)) %>% subset(!(to %in% c("fake0", "fake", "1")) & !(from %in% c("fake0", "fake", "1") & !is.na(to) & !is.na(from)))
+
+# Creating a list of unique IDs across the 3 datasets
+CogSci_2019_n4_studygroups_nodes <- data.frame(ID=unique(c(
+  CogSci_2019_n4_studygroups_edges$to,
+  CogSci_2019_n4_studygroups_edges$from)))
+
+# Checking if we have all the students in this new csv
+NROW(unique(CogSci_2019_nodes$ID)) # in regular, we have 49
+NROW(unique(CogSci_2019_n4_studygroups_nodes$ID)) # in studygroup-data, we also have 49
+
+# Remove corrupt data from nodes
+CogSci_2019_n4_studygroups_nodes <- CogSci_2019_n4_studygroups_nodes %>% subset(
+   !(ID %in% c("fake0", "fake", "1")) & !is.na(ID))
+
+# Making a graph
+CogSci_2019_n4_studygroups_edges_igraph <-
+  graph_from_data_frame(d = CogSci_2019_n4_studygroups_edges,
+                        vertices = CogSci_2019_n4_studygroups_nodes,
+                        directed = TRUE)
+
+# Then making it simpler
+simple_CogSci_2019_n4_studygroups_edges_igraph <- igraph::simplify(CogSci_2019_n4_studygroups_edges_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+# plotting it
+plot(simple_CogSci_2019_n4_studygroups_edges_igraph)+title("First look at 4th semester studygroups")
+
+# defining some things 
+V(simple_CogSci_2019_n4_studygroups_edges_igraph)$frame.color <- "white"
+V(simple_CogSci_2019_n4_studygroups_edges_igraph)$color <- "orange"
+E(simple_CogSci_2019_n4_studygroups_edges_igraph)$arrow.mode <- 0
+E(simple_CogSci_2019_n4_studygroups_edges_igraph)$width <- edge_attr(simple_CogSci_2019_n4_studygroups_edges_igraph)$weight/2
+deg <- degree(simple_CogSci_2019_n4_studygroups_edges_igraph, mode="all")
+V(simple_CogSci_2019_n4_studygroups_edges_igraph)$size <- deg/2
+
+# Three other different looks - can be uncommented to be explored
+# p1 <- plot(simple_CogSci_2019_n4_studygroups_edges_igraph,
+#      layout = layout_on_sphere,
+#      edge.arrow.size = 0.2)+title("Studygroups, layout on sphere")
+# 
+# p2 <- plot(simple_CogSci_2019_n4_studygroups_edges_igraph,
+#      layout = layout_nicely, 
+#      edge.arrow.size = 0.2)+title("Studygroups, layout nicely")
+# 
+# p3 <- plot(simple_CogSci_2019_n4_studygroups_edges_igraph,
+#      layout = layout_with_graphopt, 
+#      edge.arrow.size = 0.2)+title("Studygroups, layout with graphopt")
+
+# Community detection
+sg2019 <- cluster_walktrap(simple_CogSci_2019_n4_studygroups_edges_igraph)
+modularity(sg2019) 
+membership(sg2019)
+plot(sg2019, simple_CogSci_2019_n4_studygroups_edges_igraph)
+
+# Community detection (by optimizing modularity over partitions):
+sg2019 <- cluster_louvain(as.undirected(simple_CogSci_2019_n4_studygroups_edges_igraph))
+plot(sg2019, simple_CogSci_2019_n4_studygroups_edges_igraph)+title("Studygroups")
+
+```
+The roadmap here is to make a column indicating studygroup and then coloring for that, but we need some more preprocessing:
+
+```{r}
+
+# C19 studygroups using cluster louvain
+clp_sg_2019 <- cluster_louvain(as.undirected(simple_CogSci_2019_n4_studygroups_edges_igraph))
+
+# What are the groups? 
+clp_sg_2019[1:length(clp_sg_2019)]
+
+# Make dataframe of the groups
+membership_dataframe <- do.call(rbind.data.frame, clp_sg_2019)
+
+# Clean dataframe up & turn it
+membership_dataframe <- membership_dataframe[-c(2, 3, 5, 6), ] # deleting irrelevant rows
+membership_dataframe <- t(membership_dataframe)
+membership_dataframe <- data.frame(membership_dataframe)
+membership_dataframe <- membership_dataframe %>% rename(ID = names)
+
+# Saving the old nodes
+CogSci_2019_nodes_w_studygroup_no <- CogSci_2019_nodes # saving it over
+
+# Merge nodes with membership & rename a column
+CogSci_2019_nodes_w_studygroup_no <- merge(CogSci_2019_nodes_w_studygroup_no,membership_dataframe, by = "ID")
+CogSci_2019_nodes_w_studygroup_no <- CogSci_2019_nodes_w_studygroup_no %>% rename(studygroup_no = membership)
+
+NROW(unique(CogSci_2019_nodes_w_studygroup_no$ID)) # it should be 49 
+```
+
+## --- Data Viz 3, C19, 4th sem: Studygroup Overlay
+Now we are ready to put on some color. Specifying specific colors on overlay.
+
+Let's make some graphs: 
+
+```{r}
+# Making a graph & simplifying it
+CogSci_2019_n4_sg_igraph <-
+  igraph::graph_from_data_frame(d = CogSci_2019_n4_edges, # same edges as originally
+                        vertices = CogSci_2019_nodes_w_studygroup_no, # this df has our new sg column
+                        directed = TRUE)
+
+CogSci_2019_n4_sg_igraph <- simplify(CogSci_2019_n4_sg_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+# What colors we got to work with? 
+# colors() 
+
+# We will also remove labels, and edit the sizes
+V(CogSci_2019_n4_sg_igraph)$label <- "" 
+E(CogSci_2019_n4_sg_igraph)$arrow.mode <- 0
+E(CogSci_2019_n4_sg_igraph)$width <- edge_attr(CogSci_2019_n4_sg_igraph)$weight/2
+deg <- degree(CogSci_2019_n4_sg_igraph, mode="all")
+V(CogSci_2019_n4_sg_igraph)$size <- deg
+
+# We need to use cluster_fast_greedy to get membership clusters
+c1 = cluster_fast_greedy(as.undirected(CogSci_2019_n4_igraph)) # 7 overall SOCIAL clusters
+c2 = cluster_fast_greedy(as.undirected(simple_CogSci_2019_n4_studygroups_edges_igraph)) # 12 overall STUDYGROUPS membership clusters
+
+set.seed(123)
+
+# Below is a network without specified colors. R specifies it itself, which is bad, because it reuses some of them when it "runs out" of new colors
+plot(c1, CogSci_2019_n4_sg_igraph,
+     layout = layout_nicely,
+     col=V(CogSci_2019_n4_sg_igraph)$studygroup_no,
+     edge.arrow.size = 0.3)+title("Communities in social network at 4th semester CogSci BSc (y 19'-22') 
+Colorcoded: Studygroups")
+
+# On the other hand, below is a plot with user-specified colors: 
+plot(c1, CogSci_2019_n4_sg_igraph,
+     layout = layout_nicely,
+     V(CogSci_2019_n4_sg_igraph)$color <-
+  ifelse(
+    V(CogSci_2019_n4_sg_igraph)$studygroup_no == "1",
+    "black",
+    ifelse(
+      V(CogSci_2019_n4_sg_igraph)$studygroup_no == "2",
+      "forestgreen",
+      ifelse(
+        V(CogSci_2019_n4_sg_igraph)$studygroup_no == "3",
+        "deeppink",
+        ifelse(
+          V(CogSci_2019_n4_sg_igraph)$studygroup_no == "4",
+          "steelblue",
+          ifelse(
+            V(CogSci_2019_n4_sg_igraph)$studygroup_no == "5",
+            "darkorange1",
+            ifelse(
+              V(CogSci_2019_n4_sg_igraph)$studygroup_no == "6",
+              "chartreuse3",
+              ifelse(
+                V(CogSci_2019_n4_sg_igraph)$studygroup_no == "7",
+                "cyan",
+                ifelse(
+                  V(CogSci_2019_n4_sg_igraph)$studygroup_no == "8",
+                  "blue",
+                  ifelse(
+                    V(CogSci_2019_n4_sg_igraph)$studygroup_no == "9",
+                    "violetred3",
+                    ifelse(
+                      V(CogSci_2019_n4_sg_igraph)$studygroup_no == "10",
+                      "grey",
+                      ifelse(
+                        V(CogSci_2019_n4_sg_igraph)$studygroup_no == "11",
+                        "brown",
+                        ifelse(V(CogSci_2019_n4_sg_igraph)$studygroup_no == "12", "red", "")))))))))))),
+     edge.arrow.size = 0.3)+title("Communities in social network at 4th semester CogSci BSc (y 19'-22') 
+Nodes' colorcode: Studygroups")
+par(las=1)
+mtext("S1 = black\nS2 = forestgreen\nS3 = deeppink\nS4 = steelblue\nS5 = darkorange1\nS6 = chartreuse3\nS7 = cyan\nS8 = blue\nS9 = violetred3\nS10 = grey\nS11 = brown\nS12 = red", side=2, line = 1,adj=0)
+
+```
+
+# --- Data for C19, 4th sem.
+
+Let's look at the 2018 year of CogSci. Here is the compressed code for preprocessing and starting data visualization: 
+
+```{r}
+
+# Making list of unique ID's from the edges data for our nodes
+CogSci_2018_nodes <- data.frame(ID=unique(c(
+  CogSci_2018_n4_edges$to,
+  CogSci_2018_n4_edges$from)))
+
+# Visualize
+CogSci_2018_n4_igraph <-
+  graph_from_data_frame(d = CogSci_2018_n4_edges,
+                        vertices = CogSci_2018_nodes,
+                        directed = TRUE)
+
+simple_CogSci_2018_n4_igraph <- simplify(CogSci_2018_n4_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+# Attributes
+V(simple_CogSci_2018_n4_igraph)$frame.color <- "white"
+V(simple_CogSci_2018_n4_igraph)$color <- "orange"
+V(simple_CogSci_2018_n4_igraph)$label <- "" 
+E(simple_CogSci_2018_n4_igraph)$arrow.mode <- 0
+E(simple_CogSci_2018_n4_igraph)$width <- edge_attr(simple_CogSci_2018_n4_igraph)$weight/2
+deg <- degree(simple_CogSci_2018_n4_igraph, mode="all")
+V(simple_CogSci_2018_n4_igraph)$size <- deg
+
+# Community detection
+wc2018 <- cluster_walktrap(simple_CogSci_2018_n4_igraph)
+wc2018 <- cluster_infomap(as.undirected(simple_CogSci_2018_n4_igraph))
+modularity(wc2018)
+membership(wc2018)
+
+# Community detection (by optimizing modularity over partitions):
+clp2018 <- cluster_louvain(as.undirected(simple_CogSci_2018_n4_igraph))
+
+# First plot
+plot(wc2018, simple_CogSci_2018_n4_igraph)+title("First look at CogSci18 communities in 4th semester")
+
+# Second plot
+plot(clp2018, simple_CogSci_2018_n4_igraph)+title("Second look at CogSci18 (using cluster_louvain) 
+at communities in 4th semester")
+
+```
+
+## --- Studygroups - Preproc. and Data Viz C18, 4th sem.
+```{r}
+
+# Checking if we have all the students in this new csv
+NROW(unique(CogSci_2018_nodes$ID)) # in regular, we have 52
+NROW(unique(CogSci_2018_n4_studygroups_nodes$ID)) # in studygroup, we have 50. Who two are missing? 
+
+# Who is missing? 
+missing <- CogSci_2018_nodes
+missing$who <- CogSci_2018_nodes$ID %in% CogSci_2018_n4_studygroups_nodes$ID
+missing %>% filter(who == FALSE)
+
+# We have two ID's missing from nodes in the studygroups. It's 50 and 52. Maybe they don't have studygroups. Let's add them. Can also be checked like this: 
+
+"50" %in% CogSci_2018_n4_studygroups_nodes$ID 
+"52" %in% CogSci_2018_n4_studygroups_nodes$ID 
+
+# Let's add them
+solos <- data.frame("50","52")
+solos <- as.data.frame(t(solos))
+solos <- solos %>% rename(ID = V1)
+solos$studygroup_no <- ("13")
+solos[2,2] <- ("14")
+
+CogSci_2018_n4_studygroups_nodes <- rbind(CogSci_2018_n4_studygroups_nodes, solos)
+# Now, we should have 52 rows in both nodes and studygroup nodes. 
+
+# Renaming the file, so it's in the same format as for the 2019's
+CogSci_2018_nodes_w_studygroup_no <- CogSci_2018_n4_studygroups_nodes
+
+# Switch order of columns
+CogSci_2018_nodes_w_studygroup_no <- CogSci_2018_nodes_w_studygroup_no[,c(2,1)]
+```
+
+## --- Data Viz 4, C18, 4th sem: Studygroup Overlay
+The roadmap is to make a column indicating studygroup and then coloring for that. We already have that, so we do not need to take the same find-the-groups-in-the-edges appraoch as before. We should be able to go straight to the graph: 
+
+```{r}
+
+# mMaking a graph & simplifying it
+CogSci_2018_n4_sg_igraph <-
+  igraph::graph_from_data_frame(d = CogSci_2018_n4_edges, # same edges as originally
+                        vertices = CogSci_2018_nodes_w_studygroup_no, # this df has our new sg column
+                        directed = TRUE)
+
+CogSci_2018_n4_sg_igraph <- simplify(CogSci_2018_n4_sg_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+# What colors we got to work with? 
+# colors() 
+
+# We will  remove labels, and edit the sizes
+E(CogSci_2018_n4_sg_igraph)$arrow.mode <- 0
+E(CogSci_2018_n4_sg_igraph)$width <- edge_attr(CogSci_2018_n4_sg_igraph)$weight/2
+V(CogSci_2018_n4_sg_igraph)$label <- "" 
+deg <- degree(CogSci_2018_n4_sg_igraph, mode="all")
+V(CogSci_2018_n4_sg_igraph)$size <- deg
+
+# We need to use cluster_fast_greedy to get membership clusters
+c1 = cluster_fast_greedy(as.undirected(simple_CogSci_2018_n4_igraph)) #
+c2 = cluster_fast_greedy(as.undirected(CogSci_2018_n4_sg_igraph)) #
+
+set.seed(123)
+
+# Below is a network wihtout specified colors. R specifies it itself, which is bad, because it reuses some of them when it "runs out" of new colors
+plot(c1, CogSci_2018_n4_sg_igraph,
+     layout = layout_nicely,
+     col=V(CogSci_2018_n4_sg_igraph)$studygroup_no,
+     edge.arrow.size = 0.3)+title("Communities in social network at 4th semester CogSci BSc (y 18'-21') 
+Colorcoded nodes: Studygroups")
+
+# On the other hand, below is a plot with user-specified colors: 
+plot(
+  c1,
+  CogSci_2018_n4_sg_igraph,
+  layout = layout_nicely,
+  V(CogSci_2018_n4_sg_igraph)$color <-
+    ifelse(
+      V(CogSci_2018_n4_sg_igraph)$studygroup_no == "1",
+      "black",
+      ifelse(
+        V(CogSci_2018_n4_sg_igraph)$studygroup_no == "2",
+        "forestgreen",
+        ifelse(
+          V(CogSci_2018_n4_sg_igraph)$studygroup_no == "3",
+          "deeppink",
+          ifelse(
+            V(CogSci_2018_n4_sg_igraph)$studygroup_no == "4",
+            "steelblue",
+            ifelse(
+              V(CogSci_2018_n4_sg_igraph)$studygroup_no == "5",
+              "darkorange1",
+              ifelse(
+                V(CogSci_2018_n4_sg_igraph)$studygroup_no == "6",
+                "chartreuse3",
+                ifelse(
+                  V(CogSci_2018_n4_sg_igraph)$studygroup_no == "7",
+                  "cyan",
+                  ifelse(
+                    V(CogSci_2018_n4_sg_igraph)$studygroup_no == "8",
+                    "blue",
+                    ifelse(
+                      V(CogSci_2018_n4_sg_igraph)$studygroup_no == "9",
+                      "violetred3",
+                      ifelse(
+                        V(CogSci_2018_n4_sg_igraph)$studygroup_no == "10",
+                        "grey",
+                        ifelse(
+                          V(CogSci_2018_n4_sg_igraph)$studygroup_no == "11",
+                          "brown",
+                          ifelse(
+                            V(CogSci_2018_n4_sg_igraph)$studygroup_no == "12",
+                            "red",
+                            ifelse(
+                              V(CogSci_2018_n4_sg_igraph)$studygroup_no == "13",
+                              "yellow",
+                              ifelse(
+                                V(CogSci_2018_n4_sg_igraph)$studygroup_no == "14",
+                                "olivedrab2",
+                                "")))))))))))))),
+edge.arrow.size = 0.3) + title("Communities in social network at 4th semester CogSci BSc (y 18'-21') 
+Nodes' colorcode: Studygroups")
+par(las=1)
+mtext("S1 = black\nS2 = forestgreen\nS3 = deeppink\nS4 = steelblue\nS5 = darkorange1\nS6 = chartreuse3\nS7 = cyan\nS8 = blue\nS9 = violetred3\nS10 = grey\nS11 = brown\nS12 = red\nS13 (solo) = yellow\nS14 (solo) = olivedrab2", side=2, line = 1,adj=0)
+
+```
+
+## --- Data Viz 5, C18 & C19, 4th sem: plotting without studygroups
+
+```{r}
+# --------- C18, 2018 ---------
+# First plot
+CogSci_2018_n4_igraph <-
+  graph_from_data_frame(d = CogSci_2018_n4_edges,
+                        vertices = CogSci_2018_nodes,
+                        directed = TRUE)
+
+simple_CogSci_2018_n4_igraph <- simplify(CogSci_2018_n4_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+# Attributes
+V(simple_CogSci_2018_n4_igraph)$frame.color <- "white"
+V(simple_CogSci_2018_n4_igraph)$color <- "orange"
+V(simple_CogSci_2018_n4_igraph)$label <- "" 
+E(simple_CogSci_2018_n4_igraph)$arrow.mode <- 0
+E(simple_CogSci_2018_n4_igraph)$width <- edge_attr(simple_CogSci_2018_n4_igraph)$weight/2
+deg <- degree(simple_CogSci_2018_n4_igraph, mode="all")
+V(simple_CogSci_2018_n4_igraph)$size <- deg
+
+# Community detection
+wc2018 <- cluster_walktrap(simple_CogSci_2018_n4_igraph)
+wc2018 <- cluster_infomap(as.undirected(simple_CogSci_2018_n4_igraph))
+modularity(wc2018)
+membership(wc2018)
+
+# First plot
+plot(wc2018, simple_CogSci_2018_n4_igraph)+title("First look at CogSci18 communities in 4th semester")
+
+# Second plot
+# -- Community detection (by optimizing modularity over partitions):
+clp2018 <- cluster_louvain(as.undirected(simple_CogSci_2018_n4_igraph))
+set.seed(123)
+plot(clp2018, simple_CogSci_2018_n4_igraph)+title("Communities in social network at 4th semester CogSci BSc (y 18'-21') 
+Nodes' colorcode: Social clusters")
+
+
+# --------- C19, 2019 ---------
+# First plot
+CogSci_2019_n4_igraph <-
+  graph_from_data_frame(d = CogSci_2019_n4_edges,
+                        vertices = CogSci_2019_nodes,
+                        directed = TRUE)
+
+CogSci_2019_n4_igraph <- simplify(CogSci_2019_n4_igraph, 
+                                  remove.multiple = TRUE, 
+                                  remove.loops = TRUE,
+                                  edge.attr.comb = igraph_opt("edge.attr.comb"))
+
+V(CogSci_2019_n4_igraph)$frame.color <- "white"
+V(CogSci_2019_n4_igraph)$color <- "orange"
+V(CogSci_2019_n4_igraph)$label <- "" 
+E(CogSci_2019_n4_igraph)$arrow.mode <- 0
+E(CogSci_2019_n4_igraph)$width <- edge_attr(CogSci_2019_n4_igraph)$weight/2
+V(CogSci_2019_n4_igraph)$size <- degree(CogSci_2019_n4_igraph, mode="all")
+
+# First plot
+wc4 <- cluster_walktrap(CogSci_2019_n4_igraph)
+plot(wc4, CogSci_2019_n4_igraph)+title("First look at communities in 4th semester")
+
+# Second plot
+clp2019 <- cluster_louvain(as.undirected(CogSci_2019_n4_igraph))
+set.seed(123)
+plot(clp2019, CogSci_2019_n4_igraph)+title("Communities in social network at 4th semester CogSci BSc (y 19'-22') 
+Nodes' colorcode: Social clusters")
+```
+
+# --- Data Viz 6, C18 & C19: Degree, Betweenness, Transitivity, Eigen-centrality & Closeness centrality
+```{r}
+# --------- DEGREE ---------
+# All
+rethinking::dens(degree(CogSci_2018_n4_igraph)) + title("2018 Degrees - all")
+rethinking::dens(degree(CogSci_2019_n4_igraph)) + title("2019 Degrees - all")
+
+# Out
+rethinking::dens(degree(CogSci_2018_n4_igraph, mode = "out")) + title("2018 Degrees - out")
+rethinking::dens(degree(CogSci_2019_n4_igraph, mode = "out")) + title("2019 Degrees - out")
+
+# In
+rethinking::dens(degree(CogSci_2018_n4_igraph, mode = "in")) + title("2018 Degrees - in")
+rethinking::dens(degree(CogSci_2019_n4_igraph, mode = "in")) + title("2019 Degrees - in")
+
+# Degree distributions
+rethinking::dens(degree_distribution(CogSci_2018_n4_igraph)) + title("2018 deg. dist")
+rethinking::dens(degree_distribution(CogSci_2019_n4_igraph)) + title("2019 deg. dist")
+
+# --------- BETWEENNESS CENTRALITY ---------
+rethinking::dens(betweenness(CogSci_2018_n4_igraph)) + title("2018 Betweenness")
+rethinking::dens(betweenness(CogSci_2019_n4_igraph)) + title("2019 Betweenness")
+
+# --------- TRANSITIVITY (clustering coefficient) ---------
+rethinking::dens(transitivity(CogSci_2018_n4_igraph, type = "local")) +
+  title("2018 Transitivity")
+rethinking::dens(transitivity(CogSci_2019_n4_igraph, type = "local")) +
+  title("2019 Transitivity")
+
+# --------- EIGEN-CENTRALITY ---------
+rethinking::dens(eigen_centrality(CogSci_2018_n4_igraph)$vector) + title("2018 Eigen Centrality")
+rethinking::dens(eigen_centrality(CogSci_2019_n4_igraph)$vector) + title("2019 Eigen Centrality")
+
+# --------- CLOSENESS ---------
+rethinking::dens(closeness(CogSci_2018_n4_igraph)) + title("2018 Closeness")
+rethinking::dens(closeness(CogSci_2019_n4_igraph)) + title("2019 Closeness")
+
+```
+
+# --- Dataframing all the Network measures
+```{r}
+# --------- DEGREE ---------
+
+degrees2018 <-
+  as.data.frame(degree(CogSci_2018_n4_igraph)) %>% rownames_to_column("ID")
+colnames(degrees2018)[2] <- "degrees"
+
+degrees2019 <-
+  as.data.frame(degree(CogSci_2019_n4_igraph)) %>% rownames_to_column("ID")
+colnames(degrees2019)[2] <- "degrees"
+
+degrees2018_out <-
+  as.data.frame(degree(CogSci_2018_n4_igraph, mode = "out")) %>% rownames_to_column("ID")
+colnames(degrees2018_out)[2] <- "degrees_out"
+
+degrees2019_out <-
+  as.data.frame(degree(CogSci_2019_n4_igraph, mode = "out")) %>% rownames_to_column("ID")
+colnames(degrees2019_out)[2] <- "degrees_out"
+
+degrees2018_in <-
+  as.data.frame(degree(CogSci_2018_n4_igraph, mode = "in")) %>% rownames_to_column("ID")
+colnames(degrees2018_in)[2] <- "degrees_in"
+
+degrees2019_in <-
+  as.data.frame(degree(CogSci_2019_n4_igraph, mode = "in")) %>% rownames_to_column("ID")
+colnames(degrees2019_in)[2] <- "degrees_in"
+
+# Summaries
+summary(degrees2018$degrees) # Max 23, mean 12,8
+summary(degrees2019$degrees) # Max 16, mean 8,5
+
+# --------- BETWEENNESS ---------
+
+betweenness2018 <-
+  as.data.frame(betweenness(CogSci_2018_n4_igraph)) %>% rownames_to_column("ID")
+colnames(betweenness2018)[2] <- "betweenness"
+
+betweenness2019 <-
+  as.data.frame(betweenness(CogSci_2019_n4_igraph)) %>% rownames_to_column("ID")
+colnames(betweenness2019)[2] <- "betweenness"
+
+# Summaries
+summary(betweenness2018$betweenness) # Max 326, Mean 69
+summary(betweenness2019$betweenness) # Max 372, Mean 92
+
+# --------- TRANSITIVITY ---------
+
+transitivity2018 <-
+  data.frame(node = names(V(CogSci_2018_n4_igraph)),
+             trans = transitivity(CogSci_2018_n4_igraph, type = "local")) %>%
+  rename(ID = node,
+         transitivity = trans)
+
+transitivity2019 <-
+  data.frame(node = names(V(CogSci_2019_n4_igraph)),
+             trans = transitivity(CogSci_2019_n4_igraph, type = "local")) %>%
+  rename(ID = node,
+         transitivity = trans)
+
+# Summaries
+summary(transitivity2018$transitivity)
+summary(transitivity2019$transitivity)
+
+# --------- EIGEN-CENTRALITY ---------
+
+eigencentrality2018 <-
+  as.data.frame(eigen_centrality(CogSci_2018_n4_igraph)) %>% rownames_to_column("ID")
+
+colnames(eigencentrality2018)[2] <- "eigen_centrality"
+
+eigencentrality2018 <-
+  eigencentrality2018 %>% select(ID, eigen_centrality)
+
+eigencentrality2019 <-
+  as.data.frame(eigen_centrality(CogSci_2019_n4_igraph)) %>% rownames_to_column("ID")
+
+colnames(eigencentrality2019)[2] <- "eigen_centrality"
+
+eigencentrality2019 <-
+  eigencentrality2019 %>% select(ID, eigen_centrality)
+
+
+# Summaries
+summary(eigencentrality2018$eigen_centrality) # Mean .45, Median .45
+summary(eigencentrality2019$eigen_centrality) # Mean .37, median .38
+
+```
+
+# --- Preproc for modelling, C18 & C19: Splitting data SG/NON-SG connections
+
+```{r}
+# ------ 2018 ------
+# Getting studygroups - cleaning it up a bit
+CogSci_2018_n4_studygroups_nodes %>% group_by(studygroup_no)
+
+# Rename so it's easier
+studygroup_membership_2018_orig <- CogSci_2018_n4_studygroups_nodes %>% rename(membership=studygroup_no)
+
+# Take "from" column and merge
+studygroup_membership_2018 <- studygroup_membership_2018_orig %>% rename(from = ID)
+
+edgesandgroups2018_temp <- merge(CogSci_2018_n4_edges, studygroup_membership_2018, by = "from")
+
+# Take "to" column and merge
+studygroup_membership_2018 <- studygroup_membership_2018_orig %>% rename(to = ID)
+
+edgesandgroups2018 <- merge(edgesandgroups2018_temp,studygroup_membership_2018, by = "to" )
+
+# Renaming the columns we just got
+edgesandgroups2018_renamed <- edgesandgroups2018 %>% rename(membership_from = membership.x)
+edgesandgroups2018 <- edgesandgroups2018_renamed %>% rename(membership_to = membership.y)
+
+# Make a column indicating in/outgroup
+edgesandgroups2018$group <- ifelse(edgesandgroups2018$membership_to == edgesandgroups2018$membership_from, "ingroup", "outgroup")
+
+# Summarise and count grouped by from and to in order to get the right numbers after
+from <- edgesandgroups2018 %>% group_by(from, group) %>% summarise(n = n())
+to <- edgesandgroups2018 %>% group_by(to, group) %>% summarise(n = n())
+
+# Adding from and to together and binding them - they're going to be different instances anyway
+converted_to <- from %>% rename(to = from)
+connections <- rbind(to,converted_to)
+
+# Making subsets
+connections_in <- connections %>% filter(group=="ingroup")
+connections_out <- connections %>% filter(group=="outgroup")
+
+# Now, count + make a new column in both subsets so they can be put together
+connections_in <- connections_in %>% group_by(to) %>%
+     summarize(SG_connections = sum(n)) %>% 
+  mutate(NON_SG_connections = NA)
+
+connections_out <- connections_out %>% group_by(to) %>%
+     summarize(NON_SG_connections = sum(n)) %>% 
+  mutate(SG_connections = NA)
+
+# We can merge them in several ways: 
+
+    # Way 1 (two rows per participant, one with NA's)
+connections_overview_2018 <- rbind(connections_in,connections_out, fill = TRUE)
+
+    # Way 2 (no NA's) + lastly replacing -Inf with 0's (those without studygroups or no outgoings)
+connections_overview_no_NAs_2018 <- connections_overview_2018 %>%
+  group_by(to) %>%
+  summarise(
+    NON_SG_connections = max(NON_SG_connections, na.rm = T),
+    SG_connections = max(SG_connections, na.rm = T)
+  )
+connections_overview_no_NAs_2018[connections_overview_no_NAs_2018 == -Inf] <- 0
+
+# Making a difference column, absolute difference, total connections, ratio out/total
+connections_overview_no_NAs_2018 <- connections_overview_no_NAs_2018 %>% 
+  mutate(diff_in_out_connections = NON_SG_connections-SG_connections,
+         absdiff_in_out_connections = abs(NON_SG_connections-SG_connections),
+         total_connections = NON_SG_connections+SG_connections,
+         ratio_outgoing_over_total = NON_SG_connections/total_connections)
+
+# ------ 2019 ------
+
+# Getting studygroups
+clp_sg_2019 <- cluster_louvain(as.undirected(simple_CogSci_2019_n4_studygroups_edges_igraph))
+
+# Having a look - what are the groups? 
+clp_sg_2019[1:length(clp_sg_2019)]
+
+# Make dataframe of the groups
+membership_dataframe <- do.call(rbind.data.frame, clp_sg_2019)
+
+# clean dataframe up & turn it
+membership_dataframe <- membership_dataframe[-c(2, 3, 5, 6), ] # deleting irrelevant rows
+membership_dataframe <- t(membership_dataframe)
+membership_dataframe <- data.frame(membership_dataframe)
+membership_dataframe <- membership_dataframe %>% rename(ID = names)
+
+# Take "from" column and merge
+studygroup_membership <- membership_dataframe %>% rename(from = ID)
+
+edgesandgroups2019_temp <- merge(CogSci_2019_n4_edges, studygroup_membership, by = "from")
+
+# Take "to" column and merge
+studygroup_membership <- membership_dataframe %>% rename(to = ID)
+
+edgesandgroups2019 <- merge(edgesandgroups2019_temp,studygroup_membership, by = "to" )
+
+# Renaming the columns we just got
+edgesandgroups2019_renamed <- edgesandgroups2019 %>% rename(membership_from = membership.x)
+edgesandgroups2019 <- edgesandgroups2019_renamed %>% rename(membership_to = membership.y)
+
+# Make a column indicating in/outgroup
+edgesandgroups2019$group <- ifelse(edgesandgroups2019$membership_to == edgesandgroups2019$membership_from, "ingroup", "outgroup")
+
+# Summarise and count grouped by from and to in order to get the right numbers after
+from <- edgesandgroups2019 %>% group_by(from, group) %>% summarise(n = n())
+to <- edgesandgroups2019 %>% group_by(to, group) %>% summarise(n = n())
+
+# Adding from and to together and binding them - they're going to be different instances anyway
+converted_to <- from %>% rename(to = from)
+connections <- rbind(to,converted_to)
+
+# Making subsets
+connections_in <- connections %>% filter(group=="ingroup")
+connections_out <- connections %>% filter(group=="outgroup")
+
+# Now, count + make a new column in both subsets so they can be put together
+connections_in <- connections_in %>% group_by(to) %>%
+     summarize(SG_connections = sum(n)) %>% 
+  mutate(NON_SG_connections = NA)
+
+connections_out <- connections_out %>% group_by(to) %>%
+     summarize(NON_SG_connections = sum(n)) %>% 
+  mutate(SG_connections = NA)
+
+# We can merge them in several ways: 
+
+    # Way 1 (two rows per participant, one with NA's)
+connections_overview_2019 <- rbind(connections_in,connections_out, fill = TRUE)
+
+    # Way 2 (no NA's) + lastly replacing -Inf with 0's (those without studygroups or no outgoings)
+connections_overview_no_NAs_2019 <- connections_overview_2019 %>%
+  group_by(to) %>%
+  summarise(
+    NON_SG_connections = max(NON_SG_connections, na.rm = T),
+    SG_connections = max(SG_connections, na.rm = T)
+  )
+connections_overview_no_NAs_2019[connections_overview_no_NAs_2019 == -Inf] <- 0
+
+# Making a difference column, absolute difference, total connections, ratio out/total
+connections_overview_no_NAs_2019 <- connections_overview_no_NAs_2019 %>% 
+  mutate(diff_in_out_connections = NON_SG_connections-SG_connections,
+         absdiff_in_out_connections = abs(NON_SG_connections-SG_connections),
+         total_connections = NON_SG_connections+SG_connections,
+         ratio_outgoing_over_total = NON_SG_connections/total_connections)
+
+```
+
+# --- Preproc for modelling, C18 & C19: Merging & elongating the data for later use
+
+```{r}
+# ---- Merging 2018 and 2019 in an overview dataframe
+# Add column with year to merge
+connections_overview_no_NAs_2018 <- connections_overview_no_NAs_2018 %>% 
+  mutate(year = rep(2018,NROW(connections_overview_no_NAs_2018)))
+
+connections_overview_no_NAs_2019 <- connections_overview_no_NAs_2019 %>% 
+  mutate(year = rep(2019,NROW(connections_overview_no_NAs_2019)))
+
+connections_overview <- rbind(connections_overview_no_NAs_2018,connections_overview_no_NAs_2019)
+
+# --- Making it long
+connections_overview <-
+  connections_overview %>% rename(outgroup = NON_SG_connections,
+                                  ingroup = SG_connections)
+
+long_connections_overview <- connections_overview %>%
+  pivot_longer(c(outgroup, ingroup), names_to = "group") %>%
+  rename(ID = to,
+         count = value) %>%
+  select(ID, year, group, count)
+
+# Make as factors
+long_connections_overview$ID <- as.factor(long_connections_overview$ID)
+long_connections_overview$year <- as.factor(long_connections_overview$year)
+long_connections_overview$group <- as.factor(long_connections_overview$group)
+
+str(long_connections_overview)
+```
+
+# --- Data Viz 7, C18 & C19: Plotting SG/NON-SG connections
+
+## Plotting the differences in SG/NON-SG
+
+```{r}
+# Density - looks a little more precise for some reason
+rethinking::dens(connections_overview_no_NAs_2018$diff_in_out_connections)+title("2018")
+rethinking::dens(connections_overview_no_NAs_2019$diff_in_out_connections)+title("2019")
+
+# Ggplot - histo - diff
+p1 <- connections_overview_no_NAs_2018 %>% 
+  ggplot()+
+           geom_histogram(col = "blue", fill = "lightblue", aes( x = diff_in_out_connections))+
+  ggtitle("2018. Spread of in/outgroup diffs Positive no = more NON_SG ties than SG)")+
+  xlim(-10, 18)+
+  geom_vline(xintercept = mean(connections_overview_no_NAs_2018$diff_in_out_connections), size = 0.7, color = "brown") + # Mean line
+  geom_vline(xintercept = median(connections_overview_no_NAs_2018$diff_in_out_connections), size = 0.7, color = "darkgreen") # Median line
+
+p2 <- connections_overview_no_NAs_2019 %>% 
+  ggplot()+
+           geom_histogram(col = "red", fill = "pink", aes(x = diff_in_out_connections))+
+  ggtitle("2019. Spread of in/outgroup diffs. Positive no = more NON_SG ties than SG)")+
+  xlim(-10, 18)+
+  geom_vline(xintercept = mean(connections_overview_no_NAs_2019$diff_in_out_connections), size = 0.7, color = "brown") + # Mean line
+  geom_vline(xintercept = median(connections_overview_no_NAs_2019$diff_in_out_connections), size = 0.7, color = "darkgreen") # Median line
+
+plot_grid(p1, p2, ncol = 1, align = 'v')
+
+# Ggplot - histo - abs diff
+p1 <- connections_overview_no_NAs_2018 %>% 
+  ggplot()+
+           geom_histogram(col = "blue", fill = "lightblue", aes( x = absdiff_in_out_connections))+
+  ggtitle("2018. ABS - Spread of in/outgroup diffs Positive no = more NON_SG ties than SG)")+
+  xlim(-10, 18)+
+  geom_vline(xintercept = mean(connections_overview_no_NAs_2018$absdiff_in_out_connections), size = 0.7, color = "brown") + # Mean line
+  geom_vline(xintercept = median(connections_overview_no_NAs_2018$absdiff_in_out_connections), size = 0.7, color = "darkgreen") # Median line
+
+p2 <- connections_overview_no_NAs_2019 %>% 
+  ggplot()+
+           geom_histogram(col = "red", fill = "pink", aes(x = absdiff_in_out_connections))+
+  ggtitle("2019. ABS - Differences in in/outgroup conn. Positive no = more NON_SG ties than SG)")+
+  xlim(-10, 18)+
+  geom_vline(xintercept = mean(connections_overview_no_NAs_2019$absdiff_in_out_connections), size = 0.7, color = "brown") + # Mean line
+  geom_vline(xintercept = median(connections_overview_no_NAs_2019$absdiff_in_out_connections), size = 0.7, color = "darkgreen") # Median line
+
+plot_grid(p1, p2, ncol = 1, align = 'v')
+
+# Ggplot - density
+p1 <- connections_overview_no_NAs_2018 %>% 
+  ggplot()+
+           geom_density(col = "blue", fill = "lightblue", aes( x = diff_in_out_connections))+
+  ggtitle("2018. Dens - Differences in in/outgroup conn. Positive no = more NON_SG ties than SG)")+
+  xlim(-10, 18)+
+  geom_vline(xintercept = mean(connections_overview_no_NAs_2018$diff_in_out_connections), size = 0.7, color = "brown") + # Mean line
+  geom_vline(xintercept = median(connections_overview_no_NAs_2018$diff_in_out_connections), size = 0.7, color = "darkgreen") # Median line
+
+
+p2 <- connections_overview_no_NAs_2019 %>% 
+  ggplot()+
+           geom_density(col = "red", fill = "pink", aes(x = diff_in_out_connections))+
+  ggtitle("2019. Dens - Differences in in/outgroup conn. Positive no = more NON_SG ties than SG)")+
+  xlim(-10, 18)+
+  geom_vline(xintercept = mean(connections_overview_no_NAs_2019$diff_in_out_connections), size = 0.7, color = "brown") + # Mean line
+  geom_vline(xintercept = median(connections_overview_no_NAs_2019$diff_in_out_connections), size = 0.7, color = "darkgreen") # Median line
+
+plot_grid(p1, p2, ncol = 1, align = 'v')
+
+# Add column with year
+connections_overview_no_NAs_2018 <- connections_overview_no_NAs_2018 %>% 
+  mutate(year = rep(2018,NROW(connections_overview_no_NAs_2018)))
+
+connections_overview_no_NAs_2019 <- connections_overview_no_NAs_2019 %>% 
+  mutate(year = rep(2019,NROW(connections_overview_no_NAs_2019)))
+
+connections_overview <- rbind(connections_overview_no_NAs_2018,connections_overview_no_NAs_2019)
+
+# plotting a bit more
+# Ggplot - dens
+p1 <- connections_overview_no_NAs_2018 %>% 
+  ggplot()+
+  geom_density(col = "blue", fill = "lightblue", aes( x = NON_SG_connections))+
+  geom_density(col = "red", fill = "pink", alpha = 0.5, aes( x = SG_connections))+
+  ggtitle("2018. Spread of in/outgroup connections")+
+  labs(x = "Red connections = SG, Blue connections = NON_SG")+
+  xlim(-10, 20)
+
+p2 <- connections_overview_no_NAs_2019 %>% 
+  ggplot()+
+  geom_density(col = "blue", fill = "lightblue", aes( x = NON_SG_connections))+
+  geom_density(col = "red", fill = "pink", alpha = 0.5, aes( x = SG_connections))+
+  ggtitle("2019. Spread of in/outgroup connections")+
+  labs(x = "Red connections = SG, Blue connections = NON_SG")+
+  xlim(-10, 20)
+
+plot_grid(p1, p2)
+plot_grid(p1, p2, ncol = 1, align = 'v')
+
+# Ggplot - histo
+p1 <- connections_overview_no_NAs_2018 %>% 
+  ggplot()+
+  geom_histogram(col = "blue", fill = "lightblue", aes( x = NON_SG_connections))+
+  geom_histogram(col = "red", fill = "pink", alpha = 0.5, aes( x = SG_connections))+
+  ggtitle("2018. Spread of in/outgroup connections")+
+  labs(x = "Red connections = SG, Blue connections = NON_SG")+
+  xlim(-10, 20)
+
+p2 <- connections_overview_no_NAs_2019 %>% 
+  ggplot()+
+  geom_histogram(col = "blue", fill = "lightblue", aes( x = NON_SG_connections))+
+  geom_histogram(col = "red", fill = "pink", alpha = 0.5, aes( x = SG_connections))+
+  ggtitle("2019. Spread of in/outgroup connections")+
+  labs(x = "Red connections = SG, Blue connections = NON_SG")+
+  xlim(-10, 20)
+
+plot_grid(p1, p2)
+plot_grid(p1, p2, ncol = 1, align = 'v')
+
+```
+
+
+## --- Chunk for saving dataframes
+
+```{r}
+
+# -- Dataframe for modelling - NetworkMetricsAndConnections
+# write.csv(NetworkMetricsAndConnections, file = "NetworkMetricsAndConnections_Wide.csv")
+# test <- read.csv("NetworkMetricsAndConnections_Wide.csv", row.names = 1)
+
+# -- Dataframe for modelling - long_connections_overview
+#write.csv(long_connections_overview, file = "IngroupOutgroup_Long.csv")
+#test <- read.csv("IngroupOutgroup_Long.csv", row.names = 1)
+
+```
+
+
+
+
